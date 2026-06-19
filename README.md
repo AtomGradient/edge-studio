@@ -95,7 +95,7 @@ generation, and a follow-up query without bundling internal evaluation data.
 For the full walkthrough, SDK integration paths, and API references, use the
 Edge Developers documentation:
 
-- <https://atomgradient.github.io/edge-developers/docs/overview>
+- <https://atomgradient.github.io/edge-developers/>
 
 ## Source Install
 
