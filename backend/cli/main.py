@@ -108,6 +108,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     demo_chat.add_argument("--include-text", action="store_true", help="Include raw prompt/answer text in JSON and receipt")
     demo_chat.add_argument(
+        "--with-imprint",
+        help="Load a completed learn receipt or Neural Imprint artifact before chatting",
+    )
+    demo_chat.add_argument(
         "-i",
         "--interactive",
         action="store_true",
@@ -263,6 +267,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         max_tokens=args.max_tokens,
                         include_text=args.include_text,
                         interactive=True,
+                        with_imprint=Path(args.with_imprint).expanduser() if args.with_imprint else None,
                     )
                 )
                 return result.exit_code
@@ -272,6 +277,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     prompt=args.prompt,
                     max_tokens=args.max_tokens,
                     include_text=args.include_text,
+                    with_imprint=Path(args.with_imprint).expanduser() if args.with_imprint else None,
                 )
             )
             print(result.to_json() if args.json else format_demo_chat(result))

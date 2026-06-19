@@ -28,10 +28,15 @@ from backend.services.app_dirs import data_path
 from backend.services.error_mapper import map_error
 from backend.services.mlx_runtime_gate import mlx_runtime_gate
 from backend.services.mlx_worker import submit_mlx_task
+from backend.services.model_manager import manager
+from backend.services.neural_imprint_runtime import NeuralImprintRuntimeError, restore_neural_imprint_for_model
 
 
 CHAT_RECEIPT_SCHEMA_VERSION = "edge.demo.chat.receipt.v1"
 CHAT_RUN_SCHEMA_VERSION = "edge.demo.chat.run.v1"
+LEARN_RECEIPT_SCHEMA_VERSION = "edge.demo.learn.receipt.v1"
+GENERATION_RECEIPT_SCHEMA_VERSION = "edgestudio.neural_imprint_generation_receipt.v2"
+NEURAL_IMPRINT_METADATA_NAME = "neural_imprint_metadata.json"
 DEFAULT_MODEL_REF = "qwen3.5-9b-4bit"
 DEFAULT_MAX_TOKENS = 2048
 MAX_CONFIGURED_TOKENS = 4096
@@ -44,6 +49,7 @@ class ChatRunOptions:
     max_tokens: int | None = None
     include_text: bool = False
     interactive: bool = False
+    with_imprint: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,31 @@ class ChatInteractiveResult:
     session_id: str
     turn_count: int
     receipt_paths: list[str]
+
+
+@dataclass(frozen=True)
+class ChatImprintReference:
+    source_path: Path
+    artifact_path: Path
+    sidecar_path: Path
+    artifact_id: str | None = None
+    schema_version: str | None = None
+
+
+@dataclass(frozen=True)
+class ChatImprintState:
+    model_id: str
+    artifact_path: Path
+    sidecar_path: Path
+    artifact_id: str | None
+    prefix_token_count: int | None
+
+
+class ChatImprintError(ValueError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
 
 
 def run_demo_chat(
@@ -87,22 +118,31 @@ def run_demo_chat(
     max_tokens = _resolve_max_tokens(options, model_path)
     run_id = _run_id(options)
     started = time.time()
+    use_imprint = options.with_imprint is not None
     _progress("load", f"loading model={model_path.name} (first load can take 30-90s)")
 
     try:
-        _run_mlx_sync(_load_chat_model, model_path)
+        _run_mlx_sync(_load_chat_model, model_path, use_imprint)
     except Exception as exc:
         return _run_error("model_load_failed", f"Failed to load model: {exc}", options)
+
+    imprint_state: ChatImprintState | None = None
+    if options.with_imprint is not None:
+        try:
+            imprint_state = _restore_chat_imprint(model_path=model_path, imprint_path=options.with_imprint)
+        except ChatImprintError as exc:
+            return _run_error(exc.code, exc.message, options)
     _progress("ready", "model loaded")
 
     try:
         _progress("generate", f"max_tokens={max_tokens}")
         answer = _generate_streamed_answer(
-            model_ref=model_ref,
+            model_id=imprint_state.model_id if imprint_state is not None else model_ref,
             model_path=model_path,
             prompt=options.prompt,
             history=[],
             max_tokens=max_tokens,
+            use_neural_imprint=imprint_state is not None,
         )
     except Exception as exc:
         return _run_error("generation_failed", f"Failed to generate chat answer: {exc}", options)
@@ -122,6 +162,7 @@ def run_demo_chat(
         answer_tokens=int(answer["token_count"]),
         max_tokens=max_tokens,
         include_text=options.include_text,
+        imprint_state=imprint_state,
     )
 
     try:
@@ -148,6 +189,8 @@ def run_demo_chat(
         "network_used_during_demo": False,
         "elapsed_seconds": round(time.time() - started, 2),
     }
+    if imprint_state is not None:
+        report["neural_imprint"] = _imprint_report(imprint_state)
     if options.include_text:
         report["prompt"] = options.prompt
         report["answer"] = answer["text"]
@@ -182,12 +225,21 @@ def run_demo_chat_interactive(
     session_id = _interactive_session_id(model_ref)
     receipt_paths: list[str] = []
 
+    use_imprint = options.with_imprint is not None
     _progress("load", f"loading model={model_path.name} (first load can take 30-90s)")
     try:
-        _run_mlx_sync(_load_chat_model, model_path)
+        _run_mlx_sync(_load_chat_model, model_path, use_imprint)
     except Exception as exc:
         print(f"Failed to load model: {exc}", file=stdout)
         return ChatInteractiveResult(False, 1, session_id, 0, receipt_paths)
+
+    imprint_state: ChatImprintState | None = None
+    if options.with_imprint is not None:
+        try:
+            imprint_state = _restore_chat_imprint(model_path=model_path, imprint_path=options.with_imprint)
+        except ChatImprintError as exc:
+            print(f"Failed to restore Neural Imprint: {exc.code}: {exc.message}", file=stdout)
+            return ChatInteractiveResult(False, 1, session_id, 0, receipt_paths)
     _progress("ready", "type a message, /exit to quit")
 
     try:
@@ -215,12 +267,13 @@ def run_demo_chat_interactive(
             _progress("generate", f"turn={turn_index + 1} max_tokens={max_tokens}")
             print("assistant> ", end="", flush=True, file=stdout)
             answer = _generate_streamed_answer(
-                model_ref=model_ref,
+                model_id=imprint_state.model_id if imprint_state is not None else model_ref,
                 model_path=model_path,
                 prompt=prompt,
                 history=history,
                 max_tokens=max_tokens,
                 output_stream=stdout,
+                use_neural_imprint=imprint_state is not None,
             )
             print("", file=stdout)
         except Exception as exc:
@@ -248,6 +301,7 @@ def run_demo_chat_interactive(
             session_id=session_id,
             turn_index=turn_index + 1,
             history_turn_count=len(history) // 2,
+            imprint_state=imprint_state,
         )
         try:
             receipt_path = write_chat_receipt(receipt, run_id=run_id)
@@ -287,6 +341,7 @@ def _chat_receipt(
     session_id: str | None = None,
     turn_index: int | None = None,
     history_turn_count: int | None = None,
+    imprint_state: ChatImprintState | None = None,
 ) -> dict[str, Any]:
     receipt: dict[str, Any] = {
         "schema_version": CHAT_RECEIPT_SCHEMA_VERSION,
@@ -310,6 +365,8 @@ def _chat_receipt(
         receipt["turn_index"] = turn_index
     if history_turn_count is not None:
         receipt["history_turn_count"] = history_turn_count
+    if imprint_state is not None:
+        receipt["neural_imprint"] = _imprint_report(imprint_state)
     if include_text:
         receipt["include_text_acknowledged"] = True
         receipt["prompt"] = prompt
@@ -390,9 +447,9 @@ def _run_mlx_sync(fn, *args: Any) -> Any:
     return submit_mlx_task(fn, *args).result()
 
 
-def _load_chat_model(model_path: Path) -> None:
+def _load_chat_model(model_path: Path, force_llm: bool = False) -> None:
     with mlx_runtime_gate("cli.demo_chat.load"):
-        if _is_vlm_model(model_path):
+        if _is_vlm_model(model_path) and not force_llm:
             _get_or_load_vlm_model(str(model_path))
         else:
             _get_or_load_mlx_model(str(model_path))
@@ -402,35 +459,194 @@ def _is_vlm_model(model_path: Path) -> bool:
     return _has_vision_config(str(model_path))
 
 
+def _restore_chat_imprint(*, model_path: Path, imprint_path: Path) -> ChatImprintState:
+    reference = _resolve_imprint_reference(imprint_path)
+    _progress("imprint", f"restoring artifact={reference.artifact_path}")
+    try:
+        loaded = manager.load_model(str(model_path))
+    except Exception as exc:
+        raise ChatImprintError(
+            "model_register_failed",
+            f"Failed to register the base model before Neural Imprint restore: {exc}",
+        ) from exc
+    try:
+        status = restore_neural_imprint_for_model(
+            model_id=loaded.model_id,
+            artifact_path=reference.artifact_path,
+            sidecar_path=reference.sidecar_path,
+            artifact_id=reference.artifact_id,
+        )
+    except NeuralImprintRuntimeError as exc:
+        raise ChatImprintError(exc.code, exc.message) from exc
+    except Exception as exc:
+        raise ChatImprintError(
+            "neural_imprint_restore_failed",
+            f"Failed to restore Neural Imprint artifact: {exc}",
+        ) from exc
+    if not status.active or not status.model_id:
+        raise ChatImprintError(
+            "neural_imprint_not_active",
+            "Neural Imprint restore completed without an active runtime state.",
+        )
+    return ChatImprintState(
+        model_id=status.model_id,
+        artifact_path=reference.artifact_path,
+        sidecar_path=reference.sidecar_path,
+        artifact_id=status.artifact_id or reference.artifact_id,
+        prefix_token_count=status.prefix_token_count,
+    )
+
+
+def _resolve_imprint_reference(path: Path) -> ChatImprintReference:
+    source = path.expanduser().resolve()
+    if not source.exists():
+        raise ChatImprintError(
+            "imprint_path_not_found",
+            f"Neural Imprint path not found: {source}",
+        )
+    if source.is_dir():
+        raise ChatImprintError(
+            "imprint_path_is_directory",
+            f"Neural Imprint path must be a receipt or artifact file: {source}",
+        )
+
+    if source.suffix.lower() == ".json":
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ChatImprintError(
+                "invalid_imprint_receipt",
+                f"Neural Imprint receipt is not valid JSON: {source}",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ChatImprintError(
+                "invalid_imprint_receipt",
+                "Neural Imprint receipt must be a JSON object.",
+            )
+        return _resolve_imprint_receipt(source, payload)
+
+    artifact = source
+    sidecar = _default_imprint_sidecar_path(artifact)
+    _require_existing_file(artifact, "artifact_path")
+    _require_existing_file(sidecar, "metadata_path")
+    return ChatImprintReference(
+        source_path=source,
+        artifact_path=artifact,
+        sidecar_path=sidecar,
+        artifact_id=artifact.stem,
+    )
+
+
+def _resolve_imprint_receipt(source: Path, payload: Mapping[str, Any]) -> ChatImprintReference:
+    schema_version = str(payload.get("schema_version") or "").strip()
+    if schema_version == LEARN_RECEIPT_SCHEMA_VERSION:
+        artifact = _receipt_path(payload, "artifact_path", receipt_path=source)
+        sidecar = _receipt_path(payload, "metadata_path", receipt_path=source, required=False)
+        if sidecar is None:
+            sidecar = _default_imprint_sidecar_path(artifact)
+        artifact_id = str(payload.get("artifact_id") or "").strip() or None
+    elif schema_version == GENERATION_RECEIPT_SCHEMA_VERSION:
+        artifact = _receipt_path(payload, "artifact_path", receipt_path=source)
+        sidecar = _receipt_path(payload, "metadata_path", receipt_path=source)
+        artifact_id = str(payload.get("job_id") or "").strip() or artifact.stem
+    else:
+        raise ChatImprintError(
+            "unsupported_imprint_receipt_schema",
+            (
+                "Neural Imprint receipt schema must be "
+                f"{LEARN_RECEIPT_SCHEMA_VERSION} or {GENERATION_RECEIPT_SCHEMA_VERSION}; "
+                f"got {schema_version or '<missing>'}."
+            ),
+        )
+    _require_existing_file(artifact, "artifact_path")
+    _require_existing_file(sidecar, "metadata_path")
+    return ChatImprintReference(
+        source_path=source,
+        artifact_path=artifact,
+        sidecar_path=sidecar,
+        artifact_id=artifact_id,
+        schema_version=schema_version,
+    )
+
+
+def _receipt_path(
+    payload: Mapping[str, Any],
+    key: str,
+    *,
+    receipt_path: Path,
+    required: bool = True,
+) -> Path | None:
+    raw = str(payload.get(key) or "").strip()
+    if not raw:
+        if required:
+            raise ChatImprintError(
+                "invalid_imprint_receipt",
+                f"Neural Imprint receipt is missing {key}: {receipt_path}",
+            )
+        return None
+    return Path(raw).expanduser().resolve()
+
+
+def _require_existing_file(path: Path, field: str) -> None:
+    if not path.exists():
+        raise ChatImprintError(
+            f"imprint_{field}_not_found",
+            f"Neural Imprint {field} not found: {path}",
+        )
+    if not path.is_file():
+        raise ChatImprintError(
+            f"imprint_{field}_not_file",
+            f"Neural Imprint {field} must be a file: {path}",
+        )
+
+
+def _default_imprint_sidecar_path(artifact: Path) -> Path:
+    return artifact.with_name(NEURAL_IMPRINT_METADATA_NAME)
+
+
+def _imprint_report(state: ChatImprintState) -> dict[str, Any]:
+    return {
+        "active": True,
+        "model_id": state.model_id,
+        "artifact_id": state.artifact_id,
+        "artifact_path": str(state.artifact_path),
+        "metadata_path": str(state.sidecar_path),
+        "prefix_token_count": state.prefix_token_count,
+    }
+
+
 def _generate_streamed_answer(
     *,
-    model_ref: str,
+    model_id: str,
     model_path: Path,
     prompt: str,
     history: list[dict[str, str]],
     max_tokens: int,
     output_stream: io.TextIOBase | None = None,
+    use_neural_imprint: bool = False,
 ) -> dict[str, Any]:
     return asyncio.run(
         _generate_streamed_answer_async(
-            model_ref=model_ref,
+            model_id=model_id,
             model_path=model_path,
             prompt=prompt,
             history=history,
             max_tokens=max_tokens,
             output_stream=output_stream,
+            use_neural_imprint=use_neural_imprint,
         )
     )
 
 
 async def _generate_streamed_answer_async(
     *,
-    model_ref: str,
+    model_id: str,
     model_path: Path,
     prompt: str,
     history: list[dict[str, str]],
     max_tokens: int,
     output_stream: io.TextIOBase | None,
+    use_neural_imprint: bool,
 ) -> dict[str, Any]:
     event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     loop = asyncio.get_running_loop()
@@ -438,7 +654,7 @@ async def _generate_streamed_answer_async(
     model_params = get_generation_params(str(model_path))
     history_snapshot = [dict(turn) for turn in history]
 
-    if _is_vlm_model(model_path):
+    if _is_vlm_model(model_path) and not use_neural_imprint:
         gen_fn = _generate_streaming_vlm
         gen_args = (
             str(model_path),
@@ -455,7 +671,7 @@ async def _generate_streamed_answer_async(
     else:
         gen_fn = _generate_streaming
         gen_args = (
-            model_ref,
+            model_id,
             str(model_path),
             prompt,
             history_snapshot,
@@ -468,7 +684,7 @@ async def _generate_streamed_answer_async(
             loop,
             cancel_event,
         )
-        gen_kwargs = {}
+        gen_kwargs = {"use_neural_imprint": use_neural_imprint}
 
     future = submit_mlx_task(
         _run_cli_generation_with_gate,

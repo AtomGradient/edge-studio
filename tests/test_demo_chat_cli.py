@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -69,6 +70,42 @@ def test_demo_chat_interactive_dispatches_without_prompt(monkeypatch: pytest.Mon
     assert options.interactive is True
     assert options.model_ref == "qwen3.5-9b-4bit"
     assert options.max_tokens is None
+    assert options.with_imprint is None
+
+
+def test_demo_chat_interactive_dispatches_with_imprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    captured: dict[str, object] = {}
+    receipt = tmp_path / "learn_receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+
+    def fake_run(*, options: demo_chat.ChatRunOptions):
+        captured["options"] = options
+        return demo_chat.ChatInteractiveResult(
+            ok=True,
+            exit_code=0,
+            session_id="edge-chat-session-test",
+            turn_count=0,
+            receipt_paths=[],
+        )
+
+    monkeypatch.setattr(cli_main, "run_demo_chat_interactive", fake_run)
+
+    exit_code = cli_main.main(
+        [
+            "demo",
+            "chat",
+            "--interactive",
+            "--model",
+            "qwen3.5-9b-4bit",
+            "--with-imprint",
+            str(receipt),
+        ]
+    )
+
+    assert exit_code == 0
+    options = captured["options"]
+    assert isinstance(options, demo_chat.ChatRunOptions)
+    assert options.with_imprint == receipt
 
 
 def test_demo_chat_resolves_max_tokens_from_generation_config(tmp_path: Path) -> None:
@@ -219,6 +256,127 @@ def test_demo_chat_interactive_streams_tokens_and_writes_receipts(
     assert all(receipt["raw_text_included"] is False for receipt in receipts)
 
 
+def test_demo_chat_interactive_with_imprint_restore_failure_does_not_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "Qwen3.5-9B-4bit"
+    model_dir.mkdir()
+    receipt = tmp_path / "learn_receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    fake_where = ModelWhereReport(
+        schema_version="edge.models.where.report.v1",
+        status="ok",
+        resolution=CatalogResolution(
+            status="resolved",
+            input="qwen3.5-9b-4bit",
+            model_id="qwen3.5-9b-4bit",
+            name="Qwen3.5-9B-4bit",
+            download_hint="mlx-community/Qwen3.5-9B-4bit",
+            category="llm",
+            size_gb=5.0,
+            catalog_source="test",
+            catalog_version="test",
+            matched_by="id",
+            alternates=[],
+        ),
+        local_matches=[
+            LocalModel(
+                name="Qwen3.5-9B-4bit",
+                path=str(model_dir),
+                size_bytes=0,
+                complete=True,
+            )
+        ],
+        fetch_command=None,
+    )
+
+    monkeypatch.setattr(demo_chat, "where_model", lambda *_args, **_kwargs: fake_where)
+    monkeypatch.setattr(demo_chat, "_run_mlx_sync", lambda fn, *args: fn(*args))
+    monkeypatch.setattr(demo_chat, "_get_or_load_mlx_model", lambda _path: (object(), object()))
+    monkeypatch.setattr(
+        demo_chat,
+        "_restore_chat_imprint",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            demo_chat.ChatImprintError("artifact_restore_failed", "restore failed")
+        ),
+    )
+    monkeypatch.setattr(
+        demo_chat,
+        "_generate_streamed_answer",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("base chat fallback must not run")),
+    )
+
+    output = io.StringIO()
+    result = demo_chat.run_demo_chat_interactive(
+        options=demo_chat.ChatRunOptions(
+            model_ref="qwen3.5-9b-4bit",
+            interactive=True,
+            with_imprint=receipt,
+        ),
+        input_stream=io.StringIO("hello\n/exit\n"),
+        output_stream=output,
+    )
+
+    assert result.ok is False
+    assert result.exit_code == 1
+    assert result.turn_count == 0
+    assert "Failed to restore Neural Imprint: artifact_restore_failed: restore failed" in output.getvalue()
+
+
+def test_demo_chat_resolves_learn_receipt_imprint_reference(tmp_path: Path) -> None:
+    artifact = tmp_path / "neural_imprint_full_cache.safetensors"
+    sidecar = tmp_path / "neural_imprint_metadata.json"
+    receipt = tmp_path / "learn_receipt.json"
+    artifact.write_bytes(b"artifact")
+    sidecar.write_text("{}", encoding="utf-8")
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": demo_chat.LEARN_RECEIPT_SCHEMA_VERSION,
+                "artifact_id": "learn-run",
+                "artifact_path": str(artifact),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reference = demo_chat._resolve_imprint_reference(receipt)
+
+    assert reference.schema_version == demo_chat.LEARN_RECEIPT_SCHEMA_VERSION
+    assert reference.artifact_id == "learn-run"
+    assert reference.artifact_path == artifact.resolve()
+    assert reference.sidecar_path == sidecar.resolve()
+
+
+def test_demo_chat_rejects_unknown_imprint_receipt_schema(tmp_path: Path) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text('{"schema_version": "unknown"}', encoding="utf-8")
+
+    with pytest.raises(demo_chat.ChatImprintError) as exc:
+        demo_chat._resolve_imprint_reference(receipt)
+
+    assert exc.value.code == "unsupported_imprint_receipt_schema"
+
+
+def test_demo_chat_rejects_missing_imprint_artifact_from_receipt(tmp_path: Path) -> None:
+    receipt = tmp_path / "learn_receipt.json"
+    receipt.write_text(
+        json.dumps(
+            {
+                "schema_version": demo_chat.LEARN_RECEIPT_SCHEMA_VERSION,
+                "artifact_path": str(tmp_path / "missing.safetensors"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(demo_chat.ChatImprintError) as exc:
+        demo_chat._resolve_imprint_reference(receipt)
+
+    assert exc.value.code == "imprint_artifact_path_not_found"
+
+
 def test_demo_chat_uses_vlm_streaming_for_vision_config(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -265,7 +423,7 @@ def test_demo_chat_uses_vlm_streaming_for_vision_config(
     monkeypatch.setattr(demo_chat, "_generate_streaming_vlm", fake_vlm_streaming)
 
     answer = demo_chat._generate_streamed_answer(
-        model_ref="qwen3.5-9b-4bit",
+        model_id="qwen3.5-9b-4bit",
         model_path=model_dir,
         prompt="hello",
         history=[],
@@ -282,5 +440,82 @@ def test_demo_chat_uses_vlm_streaming_for_vision_config(
             "max_tokens": 8,
             "temperature": 0.8,
             "kwargs": {"enable_thinking": False},
+        }
+    ]
+
+
+def test_demo_chat_with_imprint_uses_llm_streaming_for_vision_config(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "Qwen3.5-9B-4bit"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text('{"vision_config": {}}', encoding="utf-8")
+    calls: list[dict[str, object]] = []
+
+    def fake_llm_streaming(
+        model_id: str,
+        model_dir_arg: str,
+        prompt: str,
+        history: list[dict[str, str]],
+        max_tokens: int,
+        temperature: float,
+        top_k: int,
+        top_p: float,
+        enable_thinking: bool | None,
+        event_queue: asyncio.Queue,
+        loop: asyncio.AbstractEventLoop,
+        cancel_event,
+        **kwargs,
+    ) -> None:
+        del cancel_event
+        calls.append(
+            {
+                "model_id": model_id,
+                "model_dir": model_dir_arg,
+                "prompt": prompt,
+                "history": history,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "top_k": top_k,
+                "top_p": top_p,
+                "enable_thinking": enable_thinking,
+                "kwargs": kwargs,
+            }
+        )
+        for event in (
+            {"type": "token", "token": "ok"},
+            {"type": "complete", "full_text": "ok", "total_tokens": 1, "total_time": 0.01},
+        ):
+            asyncio.run_coroutine_threadsafe(event_queue.put(event), loop).result(timeout=1.0)
+
+    def fail_vlm(*_args, **_kwargs) -> None:
+        raise AssertionError("VLM streaming should not be used when Neural Imprint is active")
+
+    monkeypatch.setattr(demo_chat, "_generate_streaming", fake_llm_streaming)
+    monkeypatch.setattr(demo_chat, "_generate_streaming_vlm", fail_vlm)
+
+    answer = demo_chat._generate_streamed_answer(
+        model_id="loaded-model-id",
+        model_path=model_dir,
+        prompt="hello",
+        history=[],
+        max_tokens=8,
+        use_neural_imprint=True,
+    )
+
+    assert answer["text"] == "ok"
+    assert calls == [
+        {
+            "model_id": "loaded-model-id",
+            "model_dir": str(model_dir),
+            "prompt": "hello",
+            "history": [],
+            "max_tokens": 8,
+            "temperature": 0.8,
+            "top_k": 30,
+            "top_p": 0.85,
+            "enable_thinking": False,
+            "kwargs": {"use_neural_imprint": True},
         }
     ]
