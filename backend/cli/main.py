@@ -102,8 +102,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=(
-            "Maximum tokens to generate; defaults to model generation config when available, "
-            f"otherwise {DEFAULT_MAX_TOKENS}"
+            "Maximum tokens to generate; defaults to model generation config or model-aware "
+            f"settings when available, otherwise {DEFAULT_MAX_TOKENS}"
         ),
     )
     demo_chat.add_argument("--include-text", action="store_true", help="Include raw prompt/answer text in JSON and receipt")

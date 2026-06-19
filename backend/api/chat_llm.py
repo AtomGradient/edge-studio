@@ -274,7 +274,7 @@ def _generate_streaming(
         sampler = make_sampler(temp=temperature, top_k=top_k, top_p=top_p)
 
         # Build prompt text
-        if _use_imprint:
+        if use_neural_imprint:
             prompt_text = _apply_neural_imprint_turn_template(
                 tokenizer,
                 prompt,

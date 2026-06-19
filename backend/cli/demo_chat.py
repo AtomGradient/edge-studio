@@ -5,27 +5,35 @@
 
 from __future__ import annotations
 
+import asyncio
+import concurrent.futures
 import hashlib
 import io
 import json
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
-from backend.api.chat_llm import _apply_chat_template, _apply_neural_imprint_turn_template
-from backend.api.chat_loaders import _get_or_load_mlx_model
+from backend.api.chat_llm import _generate_streaming, _has_vision_config
+from backend.api.chat_loaders import _get_or_load_mlx_model, _get_or_load_vlm_model
+from backend.api.chat_params import get_generation_params
+from backend.api.chat_vlm import _generate_streaming_vlm
 from backend.cli.fingerprints import directory_manifest_hash, pretty_json
 from backend.cli.models import ModelWhereReport, where_model
 from backend.services.app_dirs import data_path
+from backend.services.error_mapper import map_error
+from backend.services.mlx_runtime_gate import mlx_runtime_gate
+from backend.services.mlx_worker import submit_mlx_task
 
 
 CHAT_RECEIPT_SCHEMA_VERSION = "edge.demo.chat.receipt.v1"
 CHAT_RUN_SCHEMA_VERSION = "edge.demo.chat.run.v1"
 DEFAULT_MODEL_REF = "qwen3.5-9b-4bit"
-DEFAULT_MAX_TOKENS = 512
+DEFAULT_MAX_TOKENS = 2048
 MAX_CONFIGURED_TOKENS = 4096
 
 
@@ -82,19 +90,18 @@ def run_demo_chat(
     _progress("load", f"loading model={model_path.name} (first load can take 30-90s)")
 
     try:
-        model, tokenizer = _get_or_load_mlx_model(str(model_path))
+        _run_mlx_sync(_load_chat_model, model_path)
     except Exception as exc:
         return _run_error("model_load_failed", f"Failed to load model: {exc}", options)
     _progress("ready", "model loaded")
 
     try:
-        prompt_text = _apply_chat_template(tokenizer, options.prompt, [], False)
-        prompt_ids = _encode(tokenizer, prompt_text)
         _progress("generate", f"max_tokens={max_tokens}")
-        answer = _generate_answer(
-            model=model,
-            tokenizer=tokenizer,
-            input_ids=prompt_ids,
+        answer = _generate_streamed_answer(
+            model_ref=model_ref,
+            model_path=model_path,
+            prompt=options.prompt,
+            history=[],
             max_tokens=max_tokens,
         )
     except Exception as exc:
@@ -177,7 +184,7 @@ def run_demo_chat_interactive(
 
     _progress("load", f"loading model={model_path.name} (first load can take 30-90s)")
     try:
-        model, tokenizer = _get_or_load_mlx_model(str(model_path))
+        _run_mlx_sync(_load_chat_model, model_path)
     except Exception as exc:
         print(f"Failed to load model: {exc}", file=stdout)
         return ChatInteractiveResult(False, 1, session_id, 0, receipt_paths)
@@ -189,7 +196,6 @@ def run_demo_chat_interactive(
         print(f"Failed to fingerprint model directory: {exc}", file=stdout)
         return ChatInteractiveResult(False, 1, session_id, 0, receipt_paths)
 
-    cache = _make_prompt_cache(model)
     history: list[dict[str, str]] = []
     turn_index = 0
 
@@ -206,23 +212,19 @@ def run_demo_chat_interactive(
             break
 
         try:
-            if turn_index == 0:
-                prompt_text = _apply_chat_template(tokenizer, prompt, [], False)
-            else:
-                # The session cache already contains prior turns, so history stays empty here.
-                # Re-tokenizing history would duplicate context in the same KV cache.
-                prompt_text = _apply_neural_imprint_turn_template(tokenizer, prompt, [], False)
-            prompt_ids = _encode(tokenizer, prompt_text)
             _progress("generate", f"turn={turn_index + 1} max_tokens={max_tokens}")
-            answer = _generate_answer(
-                model=model,
-                tokenizer=tokenizer,
-                input_ids=prompt_ids,
+            print("assistant> ", end="", flush=True, file=stdout)
+            answer = _generate_streamed_answer(
+                model_ref=model_ref,
+                model_path=model_path,
+                prompt=prompt,
+                history=history,
                 max_tokens=max_tokens,
-                cache=cache,
+                output_stream=stdout,
             )
+            print("", file=stdout)
         except Exception as exc:
-            print(f"assistant> generation failed: {exc}", file=stdout)
+            print(f"\nassistant> generation failed: {exc}", file=stdout)
             return ChatInteractiveResult(False, 1, session_id, turn_index, receipt_paths)
 
         answer_text = str(answer.get("text") or "")
@@ -232,7 +234,6 @@ def run_demo_chat_interactive(
                 {"role": "assistant", "content": answer_text},
             ]
         )
-        print(f"assistant> {answer_text}", file=stdout)
         run_id = f"{session_id}-turn-{turn_index + 1:03d}"
         receipt = _chat_receipt(
             run_id=run_id,
@@ -385,10 +386,171 @@ def _interactive_session_id(model_ref: str) -> str:
     return f"edge-chat-session-{fingerprint}"
 
 
+def _run_mlx_sync(fn, *args: Any) -> Any:
+    return submit_mlx_task(fn, *args).result()
+
+
+def _load_chat_model(model_path: Path) -> None:
+    with mlx_runtime_gate("cli.demo_chat.load"):
+        if _is_vlm_model(model_path):
+            _get_or_load_vlm_model(str(model_path))
+        else:
+            _get_or_load_mlx_model(str(model_path))
+
+
+def _is_vlm_model(model_path: Path) -> bool:
+    return _has_vision_config(str(model_path))
+
+
+def _generate_streamed_answer(
+    *,
+    model_ref: str,
+    model_path: Path,
+    prompt: str,
+    history: list[dict[str, str]],
+    max_tokens: int,
+    output_stream: io.TextIOBase | None = None,
+) -> dict[str, Any]:
+    return asyncio.run(
+        _generate_streamed_answer_async(
+            model_ref=model_ref,
+            model_path=model_path,
+            prompt=prompt,
+            history=history,
+            max_tokens=max_tokens,
+            output_stream=output_stream,
+        )
+    )
+
+
+async def _generate_streamed_answer_async(
+    *,
+    model_ref: str,
+    model_path: Path,
+    prompt: str,
+    history: list[dict[str, str]],
+    max_tokens: int,
+    output_stream: io.TextIOBase | None,
+) -> dict[str, Any]:
+    event_queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    cancel_event = threading.Event()
+    model_params = get_generation_params(str(model_path))
+    history_snapshot = [dict(turn) for turn in history]
+
+    if _is_vlm_model(model_path):
+        gen_fn = _generate_streaming_vlm
+        gen_args = (
+            str(model_path),
+            prompt,
+            None,
+            history_snapshot,
+            max_tokens,
+            model_params.temperature,
+            event_queue,
+            loop,
+            cancel_event,
+        )
+        gen_kwargs = {"enable_thinking": False}
+    else:
+        gen_fn = _generate_streaming
+        gen_args = (
+            model_ref,
+            str(model_path),
+            prompt,
+            history_snapshot,
+            max_tokens,
+            model_params.temperature,
+            model_params.top_k,
+            model_params.top_p,
+            False,
+            event_queue,
+            loop,
+            cancel_event,
+        )
+        gen_kwargs = {}
+
+    future = submit_mlx_task(
+        _run_cli_generation_with_gate,
+        gen_fn,
+        gen_args,
+        gen_kwargs,
+        event_queue,
+        loop,
+    )
+    chunks: list[str] = []
+
+    try:
+        while True:
+            try:
+                event = await asyncio.wait_for(event_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                if future.done():
+                    future.result()
+                    break
+                continue
+
+            event_type = event.get("type")
+            if event_type == "token":
+                token_text = str(event.get("token") or "")
+                if token_text:
+                    chunks.append(token_text)
+                    if output_stream is not None:
+                        print(token_text, end="", flush=True, file=output_stream)
+            elif event_type == "complete":
+                answer_text = str(event.get("full_text") or "".join(chunks)).strip()
+                future.result(timeout=5.0)
+                return {
+                    "text": answer_text,
+                    "token_count": int(event.get("total_tokens") or len(chunks)),
+                    "elapsed_seconds": float(event.get("total_time") or 0.0),
+                    "tokens_per_sec": event.get("tokens_per_sec"),
+                }
+            elif event_type == "error":
+                raise RuntimeError(str(event.get("message") or "generation failed"))
+            elif event_type == "cancelled":
+                raise RuntimeError("Generation was cancelled.")
+
+        raise RuntimeError("Generation finished without a complete event.")
+    finally:
+        if not future.done():
+            cancel_event.set()
+            try:
+                future.result(timeout=5.0)
+            except concurrent.futures.TimeoutError:
+                pass
+
+
+def _run_cli_generation_with_gate(
+    gen_fn,
+    gen_args: tuple[Any, ...],
+    gen_kwargs: dict[str, Any],
+    event_queue: asyncio.Queue,
+    loop: asyncio.AbstractEventLoop,
+) -> None:
+    with mlx_runtime_gate("cli.demo_chat.generate"):
+        try:
+            gen_fn(*gen_args, **gen_kwargs)
+        except Exception as exc:
+            user_msg, _ = map_error(exc)
+            asyncio.run_coroutine_threadsafe(
+                event_queue.put({"type": "error", "message": user_msg}),
+                loop,
+            )
+
+
 def _resolve_max_tokens(options: ChatRunOptions, model_path: Path) -> int:
     if options.max_tokens is not None:
         return max(1, int(options.max_tokens))
-    return _configured_max_tokens(model_path) or DEFAULT_MAX_TOKENS
+    configured = _configured_max_tokens(model_path)
+    if configured is not None:
+        return configured
+    if not (model_path / "config.json").exists():
+        return DEFAULT_MAX_TOKENS
+    try:
+        return min(get_generation_params(str(model_path)).max_tokens, MAX_CONFIGURED_TOKENS)
+    except Exception:
+        return DEFAULT_MAX_TOKENS
 
 
 def _configured_max_tokens(model_path: Path) -> int | None:
@@ -434,92 +596,3 @@ def _sha256_prefixed(data: bytes) -> str:
 
 def _sha256_hex(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
-
-
-def _encode(tokenizer: Any, text: str) -> list[int]:
-    if hasattr(tokenizer, "encode"):
-        tokens = tokenizer.encode(text)
-    else:
-        tokens = tokenizer._tokenizer.encode(text)
-    return list(tokens) if not isinstance(tokens, list) else tokens
-
-
-def _decode(tokenizer: Any, token_ids: Sequence[int]) -> str:
-    try:
-        if hasattr(tokenizer, "decode"):
-            value = tokenizer.decode(list(token_ids))
-        else:
-            value = tokenizer._tokenizer.decode(list(token_ids))
-        return value if isinstance(value, str) else str(value)
-    except Exception:
-        return "".join(str(t) for t in token_ids)
-
-
-def _eos_token_ids(tokenizer: Any) -> set[int]:
-    ids: set[int] = set()
-    value = getattr(tokenizer, "eos_token_id", None)
-    if isinstance(value, int) and value >= 0:
-        ids.add(int(value))
-    for token in ("<|im_end|>", "<|endoftext|>"):
-        tok = tokenizer._tokenizer if hasattr(tokenizer, "_tokenizer") else tokenizer
-        try:
-            if hasattr(tok, "token_to_id"):
-                token_id = tok.token_to_id(token)
-            elif hasattr(tok, "convert_tokens_to_ids"):
-                token_id = tok.convert_tokens_to_ids(token)
-            else:
-                continue
-            if isinstance(token_id, int) and token_id >= 0:
-                ids.add(token_id)
-        except Exception:
-            continue
-    return ids
-
-
-def _make_prompt_cache(model: Any) -> Any:
-    from backend.core.dsr_cache import make_prompt_cache
-
-    return make_prompt_cache(model)
-
-
-def _forward_last_logits(model: Any, token_ids: Sequence[int], cache: Any = None) -> Any:
-    import mlx.core as mx
-
-    arr = mx.array(list(token_ids), dtype=mx.int32)[None, :]
-    out = model(arr, cache=cache) if cache is not None else model(arr)
-    logits = out[0] if isinstance(out, tuple) else out
-    last = logits[:, -1, :].astype(mx.float32)
-    mx.eval(last)
-    return last[0]
-
-
-def _generate_answer(
-    *,
-    model: Any,
-    tokenizer: Any,
-    input_ids: Sequence[int],
-    max_tokens: int,
-    cache: Any = None,
-) -> dict[str, Any]:
-    import mlx.core as mx
-
-    started = time.time()
-    prompt_cache = cache if cache is not None else _make_prompt_cache(model)
-    logits = _forward_last_logits(model, input_ids, cache=prompt_cache)
-    generated: list[int] = []
-    stops = _eos_token_ids(tokenizer)
-
-    for _ in range(max_tokens):
-        token = int(mx.argmax(logits, axis=-1).item())
-        if token in stops:
-            _forward_last_logits(model, [token], cache=prompt_cache)
-            break
-        generated.append(token)
-        logits = _forward_last_logits(model, [token], cache=prompt_cache)
-
-    text = _decode(tokenizer, generated).strip()
-    return {
-        "text": text,
-        "token_count": len(generated),
-        "elapsed_seconds": round(time.time() - started, 2),
-    }

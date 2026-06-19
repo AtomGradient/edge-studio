@@ -79,7 +79,9 @@ edge demo chat --model qwen3.5-9b-4bit --interactive
 ```
 
 The first 9B model load can take tens of seconds. After `[chat:ready]`, ask a
-few questions and exit with `/exit`.
+few questions and the answer streams token by token. The CLI uses model-aware
+generation defaults; override the output length with `--max-tokens` when needed.
+Exit with `/exit`.
 
 ## Learning Demo
 
