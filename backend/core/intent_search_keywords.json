@@ -1,0 +1,50 @@
+{
+  "_comment": "Keyword → use_case mappings for intent_search.py tag-based fallback. Extracted from hardcoded _KEYWORD_MAP to allow runtime customization without code changes.",
+  "keyword_map": {
+    "聊天": "chat", "对话": "chat", "助手": "chat", "问答": "chat",
+    "代码": "coding", "编程": "coding", "程序": "coding", "开发": "coding",
+    "推理": "reasoning", "分析": "reasoning", "数学": "reasoning", "逻辑": "reasoning",
+    "翻译": "translation", "多语": "translation",
+    "图片": "multimodal", "图像": "multimodal", "视觉": "multimodal", "看图": "multimodal", "文档": "multimodal", "OCR": "multimodal",
+    "语音识别": "asr", "语音转文字": "asr", "转写": "asr", "听写": "asr", "语音": "asr",
+    "语音合成": "tts", "朗读": "tts", "配音": "tts",
+    "chat": "chat", "conversation": "chat", "assistant": "chat", "qa": "chat",
+    "code": "coding", "coding": "coding", "programming": "coding", "developer": "coding",
+    "reason": "reasoning", "reasoning": "reasoning", "math": "reasoning", "logic": "reasoning", "thinking": "reasoning",
+    "translat": "translation", "multilingual": "translation",
+    "image": "multimodal", "vision": "multimodal", "photo": "multimodal", "picture": "multimodal", "ocr": "multimodal", "document": "multimodal",
+    "speech": "asr", "transcri": "asr", "voice recognition": "asr", "stt": "asr", "asr": "asr",
+    "voice": "voice", "listen": "asr", "dictation": "asr", "audio": "asr",
+    "tts": "tts", "text to speech": "tts", "voice generation": "tts", "narrat": "tts", "read aloud": "tts",
+    "speak": "tts", "synthesize": "tts", "synthesis": "tts", "aloud": "tts"
+  },
+  "category_keywords": {
+    "asr": "voice speech recognition audio transcription dictation listen",
+    "tts": "voice speech synthesis text-to-speech speak narrate audio generation",
+    "llm": "text chat conversation question answer language",
+    "vlm": "vision image photo picture visual multimodal document OCR"
+  },
+  "device_hint_map": [
+    ["ipad pro", "iPad Pro M5"],
+    ["ipad air", "iPad Air M3"],
+    ["ipad", "iPad Air M3"],
+    ["iphone 17 pro max", "iPhone 17 Pro Max"],
+    ["iphone 17 pro", "iPhone 17 Pro"],
+    ["iphone 17e", "iPhone 17e"],
+    ["iphone 16 pro max", "iPhone 16 Pro Max"],
+    ["iphone 16 pro", "iPhone 16 Pro"],
+    ["iphone 15 pro", "iPhone 15 Pro"],
+    ["iphone air", "iPhone Air"],
+    ["iphone", "iPhone 17 Pro"],
+    ["手机", "iPhone 17 Pro"],
+    ["phone", "iPhone 17 Pro"],
+    ["mobile", "iPhone 17 Pro"],
+    ["macbook air", "MacBook Air M5 (16GB)"],
+    ["macbook pro", "MacBook Pro M5 Pro (24GB)"],
+    ["macbook", "MacBook Air M5 (16GB)"],
+    ["笔记本", "MacBook Air M5 (16GB)"],
+    ["laptop", "MacBook Air M5 (16GB)"],
+    ["mac studio", "Mac Studio M3 Ultra (256GB)"],
+    ["mac mini", "Mac mini M4 (16GB)"]
+  ]
+}

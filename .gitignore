@@ -1,0 +1,26 @@
+# Copyright © 2026 AtomGradient
+# 版权所有 © 2026 质子梯度（北京）科技有限公司
+
+.DS_Store
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+.venv/
+.venv-*/
+dist/
+build/
+
+frontend/node_modules/
+frontend/dist/
+backend/resources/frontend/dist/
+
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+.env
+.env.*
+*.log

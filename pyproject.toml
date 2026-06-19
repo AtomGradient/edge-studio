@@ -1,0 +1,79 @@
+# Copyright © 2026 AtomGradient
+# 版权所有 © 2026 质子梯度（北京）科技有限公司
+
+[project]
+name = "edge-studio"
+version = "0.0.1rc1"
+description = "Edge Studio — on-device LLM optimization workbench for Apple Silicon"
+requires-python = ">=3.11"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{name = "AtomGradient"}]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "fastapi>=0.115.0,<1.0",
+    "uvicorn[standard]>=0.30.0,<1.0",
+    "pydantic>=2.0.0,<3.0",
+    "PyYAML>=6.0",
+    "platformdirs>=4.0",
+    "python-multipart>=0.0.7",
+    "httpx[socks]>=0.24.0",
+    "safetensors>=0.4.0,<1.0",
+    "numpy>=2.3.0,<3.0",
+    "tokenizers>=0.22.0,<0.23.0",
+    "transformers>=5.5.0,<6.0.0",
+    "huggingface-hub>=1.5.0,<2.0",
+    "sentence-transformers>=5.3.0,<6.0",
+    "modelscope>=1.34.0,<2.0",
+    "soundfile>=0.12.0",
+    "cryptography>=41.0",
+    "pyOpenSSL>=23.0",
+    "zeroconf>=0.140",
+    "mlx>=0.31.2",
+    "mlx-lm>=0.31.3",
+    "mlx-vlm>=0.5.0",
+    "mlx-audio>=0.4.3",
+]
+
+[project.optional-dependencies]
+coreml = ["coremltools>=7.0", "torch>=2.0"]
+all = ["edge-studio[coreml]"]
+dev = ["build>=1.2.0", "pytest>=7.0.0"]
+
+[project.urls]
+Homepage = "https://github.com/AtomGradient/edge-studio"
+Documentation = "https://atomgradient.github.io/edge-developers/"
+Repository = "https://github.com/AtomGradient/edge-studio"
+
+[project.scripts]
+edge = "backend.cli.main:main"
+
+[build-system]
+requires = ["setuptools>=77.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["backend*", "edgestudio_core*"]
+exclude = ["backend.tests*"]
+
+[tool.setuptools.package-data]
+"*" = ["*.json", "*.yaml", "*.yml"]
+"backend" = [
+    "resources/scripts/*",
+    "resources/frontend/dist/*",
+    "resources/frontend/dist/assets/*",
+]
