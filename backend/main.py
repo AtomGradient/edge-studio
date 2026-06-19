@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import threading
@@ -89,13 +90,18 @@ def _auto_download_embedding():
 
 
 def _auto_start_edgemesh():
+    host = "127.0.0.1"
+    port = 18842
+    server = None
     try:
-        from backend.config import PORT
+        from backend.config import HOST, PORT
         from backend.services import event_ingest
         from backend.services.certificate_manager import load_or_create
         from backend.services.mesh_discovery import get_default_broadcaster
         from backend.services.mesh_transport import get_default_server
 
+        host = HOST
+        port = PORT
         identity = load_or_create()
         server = get_default_server()
         # Register event_upload handler before accept loop starts — any connection
@@ -136,6 +142,15 @@ def _auto_start_edgemesh():
             server.port, PORT, identity.fingerprint,
         )
     except Exception as e:  # noqa: BLE001
+        if isinstance(e, OSError) and e.errno == errno.EADDRINUSE:
+            ui_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+            logger.warning(
+                "EdgeMesh is already running on port %d; Studio UI is still available at http://%s:%d",
+                getattr(server, "port", 18843) if server is not None else 18843,
+                ui_host,
+                port,
+            )
+            return
         logger.warning("EdgeMesh auto-start failed: %s", e, exc_info=True)
 
 
