@@ -35,7 +35,7 @@ from backend.services.persona_rpp_input_contract import store_persona_rpp_input_
 LEARN_PLAN_SCHEMA_VERSION = "edge.demo.learn.plan.v1"
 LEARN_RUN_SCHEMA_VERSION = "edge.demo.learn.run.v1"
 LEARN_RECEIPT_SCHEMA_VERSION = "edge.demo.learn.receipt.v1"
-DEFAULT_LEARN_SAMPLE_ID = "synthetic_profile_correction_v1"
+DEFAULT_LEARN_SAMPLE_ID = "finance_conservative_cashflow_v1"
 DEFAULT_MODEL_REF = "qwen3.5-9b-4bit"
 DEFAULT_MAX_TOKENS = 128
 GENERATION_TIMEOUT_SECONDS = 180.0

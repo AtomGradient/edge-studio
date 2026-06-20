@@ -142,6 +142,8 @@ def resolve_demo_sample(sample_id: str) -> DemoSample:
 
 def resolve_learn_demo_sample(sample_id: str) -> LearnDemoSample:
     normalized = sample_id.strip().replace("-", "_")
+    if normalized == "finance_conservative_cashflow_v1":
+        return _finance_conservative_cashflow_v1()
     if normalized == "synthetic_profile_correction_v1":
         return _synthetic_profile_correction_v1()
     raise ValueError(f"unknown learn demo sample: {sample_id}")
@@ -279,6 +281,91 @@ def _synthetic_profile_correction_v1() -> LearnDemoSample:
         app_id="com.atomgradient.edge.demo.synthetic",
         base_model_id="qwen3.5-9b-4bit",
         question="How should this assistant respond to technical workflow questions?",
+        records=records,
+        corrections=corrections,
+        tool_schema_export=tool_schema_export,
+    )
+
+
+def _finance_conservative_cashflow_v1() -> LearnDemoSample:
+    tool_schema_export = {
+        "schema_version": "edgestudio.tool_schema_export.v1",
+        "tools": [
+            {
+                "name": "sample_finance_facts_lookup",
+                "description": "Read-only lookup for synthetic finance preference and cash-flow facts.",
+                "permissions": ["read_facts"],
+                "intentTags": ["exact_fact", "finance"],
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {
+                            "type": "string",
+                            "description": "Synthetic finance topic to inspect, such as risk_boundary, cashflow, or trust_boundary.",
+                        }
+                    },
+                },
+            },
+            {
+                "name": "sample_finance_cashflow_summary",
+                "description": "Read-only aggregate summary for the synthetic finance sample.",
+                "permissions": ["read_facts"],
+                "intentTags": ["aggregate_fact", "finance"],
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "scope": {
+                            "type": "string",
+                            "description": "Synthetic finance scope to summarize.",
+                        }
+                    },
+                },
+            },
+        ],
+    }
+    records = [
+        {
+            "record_id": "finance-001",
+            "kind": "explicit_preference",
+            "text": "The synthetic user avoids high-risk recommendations and prefers stable, cash-flow-aware guidance.",
+            "tags": ["synthetic", "finance", "risk_boundary"],
+        },
+        {
+            "record_id": "finance-002",
+            "kind": "cashflow_context",
+            "text": "The synthetic user's rent and fixed subscriptions are already covered; they have $800 left after bills this month.",
+            "tags": ["synthetic", "finance", "cashflow"],
+        },
+        {
+            "record_id": "finance-003",
+            "kind": "trust_boundary",
+            "text": "The synthetic user wants cash-flow impact explained before any recommendation and does not want unsupported return claims.",
+            "tags": ["synthetic", "finance", "trust_boundary"],
+        },
+    ]
+    corrections = [
+        {
+            "peer_id": "edge-demo-learn-peer",
+            "app_id": "com.atomgradient.edge.demo.finance",
+            "correction_type": "profile_correction",
+            "target": {"profile_field": "financial_guidance_style"},
+            "correction": {
+                "profile_overlay": {
+                    "risk_style": "avoid high-risk or leveraged recommendations",
+                    "priority": "cash-flow stability first",
+                    "answer_style": "explain conservative options before any upside discussion",
+                    "boundary": "no financial return claims without user-provided facts",
+                }
+            },
+            "status": "recorded",
+        }
+    ]
+    return LearnDemoSample(
+        sample_id="finance_conservative_cashflow_v1",
+        peer_id="edge-demo-learn-peer",
+        app_id="com.atomgradient.edge.demo.finance",
+        base_model_id="qwen3.5-9b-4bit",
+        question="I have $800 left after bills this month. What should I do with it?",
         records=records,
         corrections=corrections,
         tool_schema_export=tool_schema_export,
