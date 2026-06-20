@@ -29,14 +29,18 @@ import zipfile
 from dataclasses import dataclass
 from typing import Callable
 
+from backend.services.scaffold_template import (
+    EDGE_SCAFFOLD_DIR_ENV,
+    ScaffoldTemplateError,
+    resolve_scaffold_source,
+    source_tree_scaffold_source,
+)
+
 # ─────────────────────────────────────────────
 # Source paths
 # ─────────────────────────────────────────────
-_CODES_DIR = os.path.expanduser("~/Documents/Codes")
-SCAFFOLD_SRC = os.environ.get(
-    "EDGE_SCAFFOLD_DIR",
-    os.path.join(_CODES_DIR, "EdgeStudio", "edge-scaffold"),
-)
+_SOURCE_TREE_SCAFFOLD = source_tree_scaffold_source()
+SCAFFOLD_SRC = str(_SOURCE_TREE_SCAFFOLD) if _SOURCE_TREE_SCAFFOLD is not None else ""
 
 _export_lock = threading.Lock()
 
@@ -72,13 +76,13 @@ class ScaffoldExportError(Exception):
     pass
 
 
-def _read_min_runtime_version() -> str:
+def _read_min_runtime_version(scaffold_src: str) -> str:
     """Read minimum EdgeKit version from EdgeScaffold's version contract file."""
-    ver_file = os.path.join(SCAFFOLD_SRC, ".min_runtime_version")
+    ver_file = os.path.join(scaffold_src, ".min_runtime_version")
     if not os.path.isfile(ver_file):
         raise ScaffoldExportError(
             "[version-contract] .min_runtime_version not found in EdgeScaffold. "
-            "Run: cd edge-scaffold && git pull"
+            f"Set {EDGE_SCAFFOLD_DIR_ENV} to a valid edge-scaffold checkout or retry the template download."
         )
     with open(ver_file) as f:
         ver = f.read().strip()
@@ -165,25 +169,30 @@ def export_scaffold_zip(
         if not os.path.isdir(model_dir):
             result.error = f"Model directory not found: {model_dir}"
             return result
-        if not os.path.isdir(SCAFFOLD_SRC):
-            result.error = f"EdgeScaffold not found: {SCAFFOLD_SRC}"
+        try:
+            scaffold_src = _resolve_scaffold_src()
+        except ScaffoldTemplateError as e:
+            result.error = str(e)
+            return result
+        if not os.path.isdir(scaffold_src):
+            result.error = f"EdgeScaffold not found: {scaffold_src}"
             return result
 
         # ── Step 1.5: Scaffold version check ─────
-        version_file = os.path.join(SCAFFOLD_SRC, ".scaffold_version")
+        version_file = os.path.join(scaffold_src, ".scaffold_version")
         if os.path.isfile(version_file):
             with open(version_file) as f:
                 ver = int(f.read().strip())
             if ver < _MIN_SCAFFOLD_VERSION:
                 result.error = (
                     f"EdgeScaffold template too old (v{ver}, need v{_MIN_SCAFFOLD_VERSION}). "
-                    f"Please run: cd {SCAFFOLD_SRC} && git pull"
+                    f"Please update {scaffold_src} or clear the cached template."
                 )
                 return result
         else:
             result.error = (
                 f"EdgeScaffold missing .scaffold_version file. "
-                f"Please run: cd {SCAFFOLD_SRC} && git pull"
+                f"Please update {scaffold_src} or clear the cached template."
             )
             return result
 
@@ -192,23 +201,30 @@ def export_scaffold_zip(
         model_name = os.path.basename(model_dir.rstrip("/"))
         result.model_name = model_name
         result.model_tier = "single"  # Single model, no tier selection
-        rpp_library = _select_rpp_a_library(model_dir, direction_set_id=direction_set_id)
-        result.direction_set_id = str(rpp_library.get("direction_set_id") or "")
-        rpp_profile = _rpp_a_library_profile(rpp_library)
+        rpp_library = _select_rpp_a_library(
+            model_dir,
+            direction_set_id=direction_set_id,
+            required=bool((direction_set_id or "").strip()),
+        )
+        if rpp_library:
+            result.direction_set_id = str(rpp_library.get("direction_set_id") or "")
+            rpp_profile = _rpp_a_library_profile(rpp_library)
+        else:
+            result.direction_set_id = (direction_set_id or _DEFAULT_SCAFFOLD_DIRECTION_SET_ID).strip()
+            rpp_profile = _empty_rpp_a_library_profile(result.direction_set_id)
 
         # ── Step 2: Create temp dir ──────────────
         _p("Creating workspace...", 0.10)
         tmp_dir = tempfile.mkdtemp(prefix="scaffold_")
-        root_dir = os.path.join(tmp_dir, safe_name)
-        os.makedirs(root_dir)
 
         # ── Step 3: Copy EdgeScaffold ───────────
         _p("Copying EdgeScaffold template...", 0.20)
-        scaffold_dest = os.path.join(root_dir, safe_name)
-        _copytree_filtered(SCAFFOLD_SRC, scaffold_dest, _EXCLUDE_DIRS, _EXCLUDE_FILES)
+        scaffold_dest = os.path.join(tmp_dir, safe_name)
+        _copytree_filtered(scaffold_src, scaffold_dest, _EXCLUDE_DIRS, _EXCLUDE_FILES)
         _assert_dir(scaffold_dest, "Step 3: Copy EdgeScaffold")
         _assert_file(os.path.join(scaffold_dest, "project.yml"), "Step 3: Copy EdgeScaffold")
-        _install_selected_a_library(scaffold_dest, rpp_library)
+        if rpp_library:
+            _install_selected_a_library(scaffold_dest, rpp_library)
 
         # ── Step 4: Rename project dirs + files ──
         _p("Renaming project...", 0.35)
@@ -296,7 +312,7 @@ def export_scaffold_zip(
 
         # ── Step 11: Generate README ─────────────
         _p("Generating README...", 0.90)
-        _generate_readme(root_dir, safe_name, app_name, model_name, model_dir)
+        _generate_readme(scaffold_dest, safe_name, app_name, model_name, model_dir)
 
         # ── Step 12: Create ZIP ──────────────────
         _p("Creating ZIP archive...", 0.95)
@@ -321,9 +337,9 @@ def export_scaffold_zip(
     finally:
         # Clean up the staging directory but keep the ZIP
         if tmp_dir:
-            root_dir = os.path.join(tmp_dir, _sanitize_app_name(app_name))
-            if os.path.isdir(root_dir):
-                shutil.rmtree(root_dir, ignore_errors=True)
+            scaffold_dest = os.path.join(tmp_dir, _sanitize_app_name(app_name))
+            if os.path.isdir(scaffold_dest):
+                shutil.rmtree(scaffold_dest, ignore_errors=True)
         _export_lock.release()
 
     return result
@@ -339,6 +355,14 @@ def _sanitize_app_name(name: str) -> str:
     if not cleaned:
         cleaned = "MyApp"
     return "".join(w[:1].upper() + w[1:] for w in cleaned.split())
+
+
+def _resolve_scaffold_src() -> str:
+    if os.environ.get(EDGE_SCAFFOLD_DIR_ENV, "").strip():
+        return str(resolve_scaffold_source())
+    if SCAFFOLD_SRC and os.path.isdir(SCAFFOLD_SRC):
+        return SCAFFOLD_SRC
+    return str(resolve_scaffold_source())
 
 
 def _copytree_filtered(src: str, dst: str, exclude_dirs: set, exclude_files: set):
@@ -467,7 +491,23 @@ def _rpp_a_library_profile(selected: dict) -> dict[str, int | str]:
     }
 
 
-def _select_rpp_a_library(model_dir: str, *, direction_set_id: str | None = None) -> dict:
+def _empty_rpp_a_library_profile(direction_set_id: str) -> dict[str, int | str]:
+    return {
+        "model_family": "",
+        "hidden_size": 0,
+        "layer_count": 0,
+        "resource_name": "",
+        "target_layer": -1,
+        "default_sample_domain_id": _sample_domain_id_for_direction_set(direction_set_id),
+    }
+
+
+def _select_rpp_a_library(
+    model_dir: str,
+    *,
+    direction_set_id: str | None = None,
+    required: bool = False,
+) -> dict | None:
     from backend.services.a_library_registry import select_a_library_for_model_dir
 
     explicit_direction_set_id = (direction_set_id or "").strip()
@@ -485,6 +525,8 @@ def _select_rpp_a_library(model_dir: str, *, direction_set_id: str | None = None
             selection = fallback_selection
             requested_direction_set_id = "directions_a"
     if not selection.get("ok"):
+        if not required:
+            return None
         reasons = ", ".join(selection.get("reasons") or ["unknown"])
         raise ScaffoldExportError(
             "[a-library] No matching RPP A-library for this model. "
@@ -640,8 +682,8 @@ def _customize_scaffold_config(
         content,
     )
 
-    # Bind RPP to a model-matched A-library. Export fails earlier when no
-    # matching library exists; the app should not ship with an empty RPP config.
+    # Bind RPP when a model-matched A-library exists. First-run scaffold export can
+    # still produce a usable app without RPP assets; RPP features fail closed in-app.
     rpp_profile = rpp_profile or _rpp_a_library_profile({})
     content = re.sub(
         r'(static let rppModelFamily: String = )"[^"]*"',
@@ -804,7 +846,7 @@ def _customize_project_yml(scaffold_dest: str, safe_name: str, app_name: str, mo
         )
 
     # Ensure EdgeKit uses the template's version contract.
-    min_ver = _read_min_runtime_version()
+    min_ver = _read_min_runtime_version(scaffold_dest)
     content = re.sub(
         r'  (?:EdgeRuntime|EdgeKit|edge-kit):\n    (?:path: [^\n]+|url: [^\n]+(?:\n    (?:from|exactVersion): [^\n]+)?)',
         f'  EdgeKit:\n    url: https://github.com/AtomGradient/edge-kit.git\n    exactVersion: {min_ver}',
@@ -1049,7 +1091,7 @@ iOS app generated by **Edge Studio** scaffold export.
 
 ## Quick Start
 
-1. Open `{safe_name}/{safe_name}.xcodeproj` in Xcode (16.0+)
+1. Open `{safe_name}.xcodeproj` in Xcode (16.0+)
    - If `.xcodeproj` is missing, install [XcodeGen](https://github.com/yonaskolb/XcodeGen) and run:
      ```
      cd {safe_name}
@@ -1073,15 +1115,14 @@ iOS app generated by **Edge Studio** scaffold export.
 
 ```
 {safe_name}/
-├── {safe_name}/          # iOS App project
-│   ├── {safe_name}/      # Source code
-│   │   ├── App/          # App entry + ScaffoldConfig
-│   │   ├── AI/           # AIManager (model loading)
-│   │   ├── Chat/         # Chat interface
-│   │   └── ...
-│   ├── Resources/
-│   ├── project.yml       # XcodeGen spec (EdgeKit + binary EdgeHalo via GitHub URL)
-│   └── {safe_name}.xcodeproj/
+├── {safe_name}/          # Source code
+│   ├── App/              # App entry + ScaffoldConfig
+│   ├── AI/               # AIManager (model loading)
+│   ├── Chat/             # Chat interface
+│   └── ...
+├── Resources/
+├── project.yml           # XcodeGen spec (EdgeKit + binary EdgeHalo via GitHub URL)
+├── {safe_name}.xcodeproj/
 └── README.md
 ```
 
@@ -1128,11 +1169,11 @@ def _validate_zip(zip_path: str, safe_name: str):
 
     # Critical files that MUST be in the ZIP (paths relative to archive root)
     required = [
-        f"{safe_name}/{safe_name}/project.yml",
-        f"{safe_name}/{safe_name}/{safe_name}/App/{safe_name}App.swift",
-        f"{safe_name}/{safe_name}/{safe_name}/App/ScaffoldConfig.swift",
-        f"{safe_name}/{safe_name}/{safe_name}.xcodeproj/project.pbxproj",
-        f"{safe_name}/{safe_name}/{safe_name}_model_config",
+        f"{safe_name}/project.yml",
+        f"{safe_name}/{safe_name}/App/{safe_name}App.swift",
+        f"{safe_name}/{safe_name}/App/ScaffoldConfig.swift",
+        f"{safe_name}/{safe_name}.xcodeproj/project.pbxproj",
+        f"{safe_name}/{safe_name}_model_config",
         f"{safe_name}/README.md",
     ]
 

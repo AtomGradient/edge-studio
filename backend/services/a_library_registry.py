@@ -23,9 +23,15 @@ def repo_root() -> Path:
 
 
 def scaffold_rpp_dir() -> Path:
-    default = repo_root() / "edge-scaffold"
-    scaffold = Path(os.environ.get("EDGE_SCAFFOLD_DIR", str(default))).expanduser()
-    return scaffold.resolve() / "Resources" / "RPP"
+    from .scaffold_template import ScaffoldTemplateError, resolve_scaffold_source
+
+    try:
+        scaffold = resolve_scaffold_source()
+    except ScaffoldTemplateError:
+        configured = os.environ.get("EDGE_SCAFFOLD_DIR", "").strip()
+        default = repo_root() / "edge-scaffold"
+        scaffold = Path(configured or default).expanduser().resolve()
+    return scaffold / "Resources" / "RPP"
 
 
 def generated_a_library_root() -> Path:
