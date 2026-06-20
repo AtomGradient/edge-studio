@@ -51,6 +51,13 @@ def _build_optimization_summary(cfg: dict) -> tuple[list[str], bool]:
 
 
 def _make_package_swift(edge_kit_path: str) -> str:
+    if edge_kit_path:
+        dependency = f'.package(path: "{edge_kit_path}")'
+    else:
+        dependency = (
+            '.package(url: "https://github.com/AtomGradient/edge-kit.git", '
+            'exact: "1.0.0-rc98")'
+        )
     return f'''// swift-tools-version: 5.9
 import PackageDescription
 
@@ -58,10 +65,7 @@ let package = Package(
     name: "EdgeKitDemo",
     platforms: [.macOS(.v14)],
     dependencies: [
-        // Local edge-kit checkout (development)
-        .package(path: "{edge_kit_path}"),
-        // GitHub:
-        // .package(url: "https://github.com/AtomGradient/edge-kit.git", from: "1.0.0"),
+        {dependency},
     ],
     targets: [
         .executableTarget(
@@ -209,10 +213,7 @@ engine.unload()
 """
 
 
-_DEFAULT_EDGE_KIT_PATH = os.environ.get(
-    "EDGE_KIT_PATH",
-    os.path.expanduser("~/Documents/Codes/EdgeStudio/edge-kit"),
-)
+_DEFAULT_EDGE_KIT_PATH = os.environ.get("EDGE_KIT_PATH", "").strip()
 
 
 def generate_edge_runtime_project(

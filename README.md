@@ -31,12 +31,12 @@ source .venv/bin/activate
 uv pip install edge-studio
 ```
 
-Current release candidate: `0.0.1rc1`.
+Current release candidate: `0.0.1rc5`.
 
 For a deterministic RC install:
 
 ```bash
-python -m pip install edge-studio==0.0.1rc1
+python -m pip install edge-studio==0.0.1rc5
 ```
 
 The package installs one command-line entry point:

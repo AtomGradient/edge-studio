@@ -182,7 +182,12 @@ def test_export_scaffold_zip_creates_expected_archive_with_mocked_xcodegen(
         assert "name: TestApp" in project_yml
         assert "PRODUCT_BUNDLE_IDENTIFIER: com.example.testapp" in project_yml
         assert "DEVELOPMENT_TEAM: TEAMID" in project_yml
+        assert "url: https://github.com/AtomGradient/edge-kit.git" in project_yml
+        assert "git@github.com:AtomGradient/edge-kit.git" not in project_yml
         assert "exactVersion: 1.2.3" in project_yml
+
+        readme = zf.read("TestApp/README.md").decode("utf-8")
+        assert "binary EdgeHalo" in readme
 
 
 def test_export_scaffold_zip_reports_missing_model_dir(tmp_path: Path) -> None:
