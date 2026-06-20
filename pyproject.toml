@@ -3,7 +3,7 @@
 
 [project]
 name = "edge-studio"
-version = "0.0.1rc8"
+version = "0.0.1rc9"
 description = "Edge Studio — on-device LLM optimization workbench for Apple Silicon"
 requires-python = ">=3.11"
 readme = "README.md"
