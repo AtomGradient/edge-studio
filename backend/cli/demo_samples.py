@@ -65,6 +65,7 @@ class LearnDemoSample:
     records: list[dict[str, Any]]
     corrections: list[dict[str, Any]]
     tool_schema_export: dict[str, Any]
+    expected_tool_policy: dict[str, Any]
 
     @property
     def rpp_input_payload(self) -> dict[str, Any]:
@@ -87,6 +88,7 @@ class LearnDemoSample:
             "rpp_input_sha256": self.rpp_input_sha256,
             "correction_pack_sha256": self.correction_pack_sha256,
             "tool_schema_sha256": self.tool_schema_sha256,
+            "expected_tool_policy_sha256": self.expected_tool_policy_sha256,
             "question_sha256": self.question_sha256,
         }
         return sha256_prefixed(canonical_json_bytes(payload))
@@ -104,6 +106,10 @@ class LearnDemoSample:
         return sha256_prefixed(canonical_json_bytes(self.tool_schema_export))
 
     @property
+    def expected_tool_policy_sha256(self) -> str:
+        return sha256_prefixed(canonical_json_bytes(self.expected_tool_policy))
+
+    @property
     def question_sha256(self) -> str:
         return sha256_prefixed(self.question.encode("utf-8"))
 
@@ -115,6 +121,7 @@ class LearnDemoSample:
             "rpp_input_sha256": self.rpp_input_sha256,
             "correction_pack_sha256": self.correction_pack_sha256,
             "tool_schema_sha256": self.tool_schema_sha256,
+            "expected_tool_policy_sha256": self.expected_tool_policy_sha256,
             "question_sha256": self.question_sha256,
             "source_kind": "synthetic_correction_fixture",
             "record_count": len(self.records),
@@ -130,6 +137,8 @@ class LearnDemoSample:
             "question": self.question,
             "records": self.records,
             "corrections": self.corrections,
+            "tool_schema_export": self.tool_schema_export,
+            "expected_tool_policy": self.expected_tool_policy,
         }
 
 
@@ -284,6 +293,26 @@ def _synthetic_profile_correction_v1() -> LearnDemoSample:
         records=records,
         corrections=corrections,
         tool_schema_export=tool_schema_export,
+        expected_tool_policy={
+            "description": "Deterministic tool-use policy learned from this sample",
+            "tools_available": [
+                {
+                    "name": "sample_profile_facts_lookup",
+                    "when": "User asks about specific synthetic profile facts or boundaries",
+                    "args_constraint": "topic must reference a synthetic profile topic",
+                },
+                {
+                    "name": "sample_profile_summary",
+                    "when": "User asks for an aggregate summary of the synthetic profile",
+                    "args_constraint": "scope must reference a recognized synthetic profile scope",
+                },
+            ],
+            "negative_policy": [
+                "Do not call tools that require network access",
+                "Do not invent profile facts outside the synthetic records",
+                "Do not claim quality improvements without receipt evidence",
+            ],
+        },
     )
 
 
@@ -369,4 +398,24 @@ def _finance_conservative_cashflow_v1() -> LearnDemoSample:
         records=records,
         corrections=corrections,
         tool_schema_export=tool_schema_export,
+        expected_tool_policy={
+            "description": "Deterministic tool-use policy learned from this sample",
+            "tools_available": [
+                {
+                    "name": "sample_finance_facts_lookup",
+                    "when": "User asks about specific financial preferences or risk boundaries",
+                    "args_constraint": "topic must be one of: risk_boundary, cashflow, trust_boundary",
+                },
+                {
+                    "name": "sample_finance_cashflow_summary",
+                    "when": "User asks about current cash flow, bills, or available balance",
+                    "args_constraint": "scope must be a recognized finance scope",
+                },
+            ],
+            "negative_policy": [
+                "Do not call external market data tools",
+                "Do not call tools that require network access",
+                "Do not invent financial return numbers without user-provided facts",
+            ],
+        },
     )

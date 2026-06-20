@@ -116,6 +116,7 @@ def plan_learn_run(
             "status": status,
             "sample": sample.as_plan_summary(),
             "model": model,
+            "tool_learning": _tool_learning_preview(sample),
             "question_sha256": sha256_prefixed(question.encode("utf-8")),
             "raw_text_included": options.include_text,
             "network_used_during_plan": False,
@@ -336,6 +337,9 @@ def _run_learn_demo(
         "question_sha256": sha256_prefixed(question.encode("utf-8")),
         "rpp_input_sha256": sample.rpp_input_sha256,
         "correction_pack_sha256": sample.correction_pack_sha256,
+        "tool_schema_sha256": sample.tool_schema_sha256,
+        "expected_tool_policy_sha256": sample.expected_tool_policy_sha256,
+        "expected_tool_policy": sample.expected_tool_policy,
         "correction_fingerprints": correction_fingerprints,
         "included_correction_fingerprints": included_fingerprints,
         "correction_overlay_sha256": _prefixed_optional(regen_receipt.get("correction_overlay_sha256")),
@@ -383,6 +387,7 @@ def _run_learn_demo(
         },
         "model_prepare": model_prepare,
         "sample": sample.as_plan_summary(),
+        "tool_learning": _tool_learning_preview(sample),
         "question_sha256": receipt["question_sha256"],
         "state": {
             "root": str(state_root),
@@ -425,6 +430,16 @@ def _run_learn_demo(
 
     _progress("done", f"receipt={written_receipt_path}")
     return LearnRunResult(True, 0, report)
+
+
+def _tool_learning_preview(sample: LearnDemoSample) -> dict[str, Any]:
+    return {
+        "tool_schema_sha256": sample.tool_schema_sha256,
+        "expected_tool_policy_sha256": sample.expected_tool_policy_sha256,
+        "expected_tool_policy": sample.expected_tool_policy,
+        "policy_kind": "deterministic_preview",
+        "actual_tool_calls": False,
+    }
 
 
 def default_learn_receipt_path(run_id: str) -> Path:

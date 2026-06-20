@@ -40,6 +40,24 @@ def test_finance_conservative_cashflow_sample_is_inspectable() -> None:
         "sample_finance_facts_lookup",
         "sample_finance_cashflow_summary",
     ]
+    policy = sample.expected_tool_policy
+    assert policy["description"] == "Deterministic tool-use policy learned from this sample"
+    assert [tool["name"] for tool in policy["tools_available"]] == [
+        "sample_finance_facts_lookup",
+        "sample_finance_cashflow_summary",
+    ]
+    assert "Do not call tools that require network access" in policy["negative_policy"]
+    assert sample.expected_tool_policy_sha256.startswith("sha256:")
+
+
+def test_finance_sample_tool_policy_matches_schema_tools() -> None:
+    sample = resolve_learn_demo_sample("finance_conservative_cashflow_v1")
+
+    schema_tools = {tool["name"] for tool in sample.tool_schema_export["tools"]}
+    policy_tools = {tool["name"] for tool in sample.expected_tool_policy["tools_available"]}
+
+    assert policy_tools == schema_tools
+    assert sample.as_plan_summary()["expected_tool_policy_sha256"] == sample.expected_tool_policy_sha256
 
 
 def test_finance_sample_dry_run_includes_raw_text_when_requested(monkeypatch) -> None:
@@ -73,11 +91,36 @@ def test_finance_sample_dry_run_includes_raw_text_when_requested(monkeypatch) ->
     assert isinstance(result, demo_learn.LearnPlanResult)
     assert result.ok is True
     assert result.plan["sample"]["sample_id"] == "finance_conservative_cashflow_v1"
+    assert result.plan["sample"]["expected_tool_policy_sha256"].startswith("sha256:")
+    assert result.plan["tool_learning"]["policy_kind"] == "deterministic_preview"
+    assert result.plan["tool_learning"]["actual_tool_calls"] is False
+    assert [tool["name"] for tool in result.plan["tool_learning"]["expected_tool_policy"]["tools_available"]] == [
+        "sample_finance_facts_lookup",
+        "sample_finance_cashflow_summary",
+    ]
     assert result.plan["question"] == "I have $800 left after bills this month. What should I do with it?"
     sample_text = result.plan["sample_text"]
     assert sample_text["records"][0]["kind"] == "explicit_preference"
     assert "cash-flow-aware guidance" in sample_text["records"][0]["text"]
     assert sample_text["corrections"][0]["target"]["profile_field"] == "financial_guidance_style"
+    assert sample_text["tool_schema_export"]["schema_version"] == "edgestudio.tool_schema_export.v1"
+    assert sample_text["expected_tool_policy"]["tools_available"][1]["name"] == "sample_finance_cashflow_summary"
+
+
+def test_write_learn_receipt_preserves_expected_tool_policy(tmp_path: Path) -> None:
+    sample = resolve_learn_demo_sample("finance_conservative_cashflow_v1")
+    receipt = {
+        "schema_version": demo_learn.LEARN_RECEIPT_SCHEMA_VERSION,
+        "run_id": "learn-test",
+        "expected_tool_policy_sha256": sample.expected_tool_policy_sha256,
+        "expected_tool_policy": sample.expected_tool_policy,
+    }
+
+    path = demo_learn.write_learn_receipt(receipt, path=tmp_path / "learn_receipt.json")
+
+    text = path.read_text(encoding="utf-8")
+    assert "expected_tool_policy" in text
+    assert "sample_finance_cashflow_summary" in text
 
 
 def test_format_learn_run_prints_imprint_paths_and_next_command() -> None:
