@@ -5,12 +5,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any
 
-from backend.cli.fingerprints import canonical_json_bytes
+from backend.cli.fingerprints import canonical_json_bytes, sha256_prefixed
 from backend.services.persona_rpp_input_contract import (
     INPUT_SCHEMA_VERSION,
     records_sha256,
@@ -34,15 +33,15 @@ class DemoSample:
             "profile_body_sha256": self.profile_body_sha256,
             "tool_schema_sha256": self.tool_schema_sha256,
         }
-        return _sha256_prefixed(canonical_json_bytes(payload))
+        return sha256_prefixed(canonical_json_bytes(payload))
 
     @property
     def profile_body_sha256(self) -> str:
-        return _sha256_prefixed(self.profile_body.encode("utf-8"))
+        return sha256_prefixed(self.profile_body.encode("utf-8"))
 
     @property
     def tool_schema_sha256(self) -> str:
-        return _sha256_prefixed(canonical_json_bytes(self.tool_schema_export))
+        return sha256_prefixed(canonical_json_bytes(self.tool_schema_export))
 
     def as_plan_summary(self) -> dict[str, object]:
         return {
@@ -90,23 +89,23 @@ class LearnDemoSample:
             "tool_schema_sha256": self.tool_schema_sha256,
             "question_sha256": self.question_sha256,
         }
-        return _sha256_prefixed(canonical_json_bytes(payload))
+        return sha256_prefixed(canonical_json_bytes(payload))
 
     @property
     def rpp_input_sha256(self) -> str:
-        return _sha256_prefixed(canonical_json_bytes(self.rpp_input_payload))
+        return sha256_prefixed(canonical_json_bytes(self.rpp_input_payload))
 
     @property
     def correction_pack_sha256(self) -> str:
-        return _sha256_prefixed(canonical_json_bytes(self.corrections))
+        return sha256_prefixed(canonical_json_bytes(self.corrections))
 
     @property
     def tool_schema_sha256(self) -> str:
-        return _sha256_prefixed(canonical_json_bytes(self.tool_schema_export))
+        return sha256_prefixed(canonical_json_bytes(self.tool_schema_export))
 
     @property
     def question_sha256(self) -> str:
-        return _sha256_prefixed(self.question.encode("utf-8"))
+        return sha256_prefixed(self.question.encode("utf-8"))
 
     def as_plan_summary(self) -> dict[str, object]:
         return {
@@ -284,7 +283,3 @@ def _synthetic_profile_correction_v1() -> LearnDemoSample:
         corrections=corrections,
         tool_schema_export=tool_schema_export,
     )
-
-
-def _sha256_prefixed(data: bytes) -> str:
-    return f"sha256:{hashlib.sha256(data).hexdigest()}"

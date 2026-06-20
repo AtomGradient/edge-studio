@@ -7,14 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
-import hashlib
 import io
 import json
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -22,7 +20,7 @@ from backend.api.chat_llm import _generate_streaming, _has_vision_config
 from backend.api.chat_loaders import _get_or_load_mlx_model, _get_or_load_vlm_model
 from backend.api.chat_params import get_generation_params
 from backend.api.chat_vlm import _generate_streaming_vlm
-from backend.cli.fingerprints import directory_manifest_hash, pretty_json
+from backend.cli.fingerprints import directory_manifest_hash, pretty_json, sha256_hex, sha256_prefixed, utc_now_iso
 from backend.cli.models import ModelWhereReport, where_model
 from backend.services.app_dirs import data_path
 from backend.services.error_mapper import map_error
@@ -350,14 +348,14 @@ def _chat_receipt(
         "model_path": str(model_path),
         "model_sha256": model_manifest["sha256"],
         "model_sha256_scope": model_manifest.get("sha256_scope", "directory_manifest_v1"),
-        "prompt_sha256": _sha256_prefixed(prompt.encode("utf-8")),
-        "answer_sha256": _sha256_prefixed(answer_text.encode("utf-8")),
+        "prompt_sha256": sha256_prefixed(prompt.encode("utf-8")),
+        "answer_sha256": sha256_prefixed(answer_text.encode("utf-8")),
         "answer_tokens": answer_tokens,
         "max_tokens": max_tokens,
         "raw_text_included": include_text,
         "network_used_during_demo": False,
         "status": "completed",
-        "created_at": _utc_now_iso(),
+        "created_at": utc_now_iso(),
     }
     if session_id is not None:
         receipt["session_id"] = session_id
@@ -439,7 +437,7 @@ def _progress(tag: str, message: str) -> None:
 
 
 def _interactive_session_id(model_ref: str) -> str:
-    fingerprint = _sha256_hex((model_ref + str(time.time())).encode("utf-8"))[:12]
+    fingerprint = sha256_hex((model_ref + str(time.time())).encode("utf-8"))[:12]
     return f"edge-chat-session-{fingerprint}"
 
 
@@ -796,19 +794,7 @@ def _configured_max_tokens_from_mapping(data: Mapping[str, Any]) -> int | None:
 
 
 def _run_id(options: ChatRunOptions) -> str:
-    fingerprint = _sha256_hex(
+    fingerprint = sha256_hex(
         (options.model_ref + options.prompt + str(time.time()))[:512].encode("utf-8")
     )[:12]
     return f"edge-chat-{fingerprint}"
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _sha256_prefixed(data: bytes) -> str:
-    return f"sha256:{_sha256_hex(data)}"
-
-
-def _sha256_hex(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()

@@ -5,25 +5,21 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from backend.cli.demo_imprint import (
     _generate_answer,
-    _render_base_prompt,
-    _render_persona_runtime_suffix,
-    _sha256_prefixed,
+    _restore_neural_imprint_runtime,
 )
 from backend.cli.demo_samples import LearnDemoSample, resolve_learn_demo_sample
-from backend.cli.fingerprints import directory_manifest_hash, pretty_json
+from backend.cli.fingerprints import directory_manifest_hash, pretty_json, sha256_hex, sha256_prefixed, utc_now_iso
 from backend.cli.model_fetch import FetchOptions, FetchResult, SourceOption, fetch_model
 from backend.cli.models import ModelWhereReport, where_model
 from backend.services.app_dirs import data_path
@@ -33,7 +29,6 @@ from backend.services.correction_regen_coordinator import (
     regenerate_neural_imprint_from_corrections,
 )
 from backend.services.neural_imprint_generation import get_neural_imprint_generation_job
-from backend.services.neural_imprint_runtime import _expected_metadata_from_header
 from backend.services.persona_rpp_input_contract import store_persona_rpp_input_contract
 
 
@@ -121,7 +116,7 @@ def plan_learn_run(
             "status": status,
             "sample": sample.as_plan_summary(),
             "model": model,
-            "question_sha256": _sha256_prefixed(question.encode("utf-8")),
+            "question_sha256": sha256_prefixed(question.encode("utf-8")),
             "raw_text_included": options.include_text,
             "network_used_during_plan": False,
             "planned_receipt_schema": LEARN_RECEIPT_SCHEMA_VERSION,
@@ -226,22 +221,14 @@ def _run_learn_demo(
     roots = _isolated_roots(state_root)
 
     _progress("load", f"model={model_path.name}")
-    try:
-        from backend.api.chat_loaders import _get_or_load_mlx_model
-
-        model, tokenizer = _get_or_load_mlx_model(str(model_path))
-    except Exception as exc:
-        return _run_error("model_load_failed", f"Failed to load model: {exc}", options)
-
     _progress("before", "generating answer before correction regen")
     try:
-        _base_prompt, base_ids = _render_base_prompt(tokenizer, question)
         before_answer = _generate_answer(
-            model=model,
-            tokenizer=tokenizer,
-            input_ids=base_ids,
-            cache=None,
+            model_id=model_ref,
+            model_path=model_path,
+            prompt=question,
             max_tokens=max(1, options.max_tokens),
+            use_neural_imprint=False,
         )
     except Exception as exc:
         return _run_error("before_generation_failed", f"Failed to generate before answer: {exc}", options)
@@ -299,30 +286,23 @@ def _run_learn_demo(
     metadata_path = Path(str(result.get("metadata_path") or ""))
 
     _progress("restore", "restoring corrected Neural Imprint artifact")
-    restored_cache: Any | None = None
     try:
-        from edgestudio_core.halo_capsule import full_cache
-
-        header = full_cache.load_safetensors_metadata(artifact_path)
-        expected = _expected_metadata_from_header(header)
-        restored_cache = full_cache.restore_full_cache(
-            model,
-            artifact_path,
+        runtime_model_id = _restore_neural_imprint_runtime(
+            model_path=model_path,
+            artifact_path=artifact_path,
             metadata_path=metadata_path,
-            expected_metadata=expected,
+            artifact_id=f"learn-{run_id}",
         )
-        _suffix_text, suffix_ids = _render_persona_runtime_suffix(tokenizer, question=question)
         after_answer = _generate_answer(
-            model=model,
-            tokenizer=tokenizer,
-            input_ids=suffix_ids,
-            cache=restored_cache,
+            model_id=runtime_model_id,
+            model_path=model_path,
+            prompt=question,
             max_tokens=max(1, options.max_tokens),
+            use_neural_imprint=True,
         )
     except Exception as exc:
         return _run_error("artifact_restore_failed", f"Failed to restore corrected Neural Imprint artifact: {exc}", options)
     finally:
-        del restored_cache
         try:
             from backend.services.neural_imprint_generation import _clear_mlx_cache
 
@@ -332,8 +312,8 @@ def _run_learn_demo(
 
     try:
         model_manifest = directory_manifest_hash(model_path)
-        artifact_sha256 = _sha256_prefixed(artifact_path.read_bytes())
-        metadata_sha256 = _sha256_prefixed(metadata_path.read_bytes())
+        artifact_sha256 = sha256_prefixed(artifact_path.read_bytes())
+        metadata_sha256 = sha256_prefixed(metadata_path.read_bytes())
     except Exception as exc:
         return _run_error("fingerprint_failed", f"Failed to fingerprint learn demo outputs: {exc}", options)
 
@@ -353,7 +333,7 @@ def _run_learn_demo(
         "model_sha256_scope": model_manifest.get("sha256_scope", "directory_manifest_v1"),
         "sample_id": sample.sample_id,
         "sample_sha256": sample.sample_sha256,
-        "question_sha256": _sha256_prefixed(question.encode("utf-8")),
+        "question_sha256": sha256_prefixed(question.encode("utf-8")),
         "rpp_input_sha256": sample.rpp_input_sha256,
         "correction_pack_sha256": sample.correction_pack_sha256,
         "correction_fingerprints": correction_fingerprints,
@@ -367,16 +347,16 @@ def _run_learn_demo(
         "generation_job_id": str(job.get("job_id") or ""),
         "generation_status": str(job.get("status") or ""),
         "state_root": str(state_root),
-        "before_answer_sha256": _sha256_prefixed(before_answer["text"].encode("utf-8")),
+        "before_answer_sha256": sha256_prefixed(before_answer["text"].encode("utf-8")),
         "before_answer_tokens": before_answer["token_count"],
-        "after_answer_sha256": _sha256_prefixed(after_answer["text"].encode("utf-8")),
+        "after_answer_sha256": sha256_prefixed(after_answer["text"].encode("utf-8")),
         "after_answer_tokens": after_answer["token_count"],
         "answers_differ": before_answer["text"] != after_answer["text"],
         "raw_text_included": options.include_text,
         "network_used_during_demo": False,
         "network_used_during_model_prepare": _model_prepare_used_network(model_prepare),
         "status": "completed",
-        "created_at": _utc_now_iso(),
+        "created_at": utc_now_iso(),
     }
     if options.include_text:
         receipt["include_text_acknowledged"] = True
@@ -523,10 +503,13 @@ def format_learn_run(result: LearnRunResult) -> str:
         f"sample: {report.get('sample', {}).get('sample_id')}",
         f"state: {report.get('state', {}).get('root')}",
         f"generation_job: {report.get('generation', {}).get('job_id')}",
+        f"artifact: {report.get('generation', {}).get('artifact_path')}",
+        f"metadata: {report.get('generation', {}).get('metadata_path')}",
         f"before_answer_sha256: {comp.get('before_answer_sha256')}",
         f"after_answer_sha256: {comp.get('after_answer_sha256')}",
         f"answers_differ: {comp.get('answers_differ')}",
         f"receipt: {report.get('receipt_path')}",
+        f"next: edge demo chat --model {report.get('model', {}).get('model_ref')} --interactive --with-imprint \"{report.get('receipt_path')}\"",
         "raw_text_in_receipt: false" if not report.get("raw_text_included") else "raw_text_in_receipt: true",
     ]
     if report.get("raw_text_included"):
@@ -749,17 +732,17 @@ def _plan_run_id(options: LearnRunOptions, *, sample: LearnDemoSample) -> str:
         + (options.question.strip() or sample.question)
         + sample.sample_sha256
     )
-    return f"edge-learn-plan-{_sha256_hex(material.encode('utf-8'))[:12]}"
+    return f"edge-learn-plan-{sha256_hex(material.encode('utf-8'))[:12]}"
 
 
 def _run_id(options: LearnRunOptions, *, sample: LearnDemoSample) -> str:
     material = options.sample_id + options.model_ref + (options.question.strip() or sample.question) + str(time.time())
-    return f"edge-learn-{_sha256_hex(material.encode('utf-8'))[:12]}"
+    return f"edge-learn-{sha256_hex(material.encode('utf-8'))[:12]}"
 
 
 def _basic_plan_run_id(options: LearnRunOptions) -> str:
     material = options.sample_id + options.model_ref + options.question + str(options.dry_run)
-    return f"edge-learn-plan-{_sha256_hex(material.encode('utf-8'))[:12]}"
+    return f"edge-learn-plan-{sha256_hex(material.encode('utf-8'))[:12]}"
 
 
 def _run_error(
@@ -811,12 +794,6 @@ def _progress(tag: str, message: str) -> None:
     print(f"[learn:{tag}] {message}", file=sys.stderr)
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _sha256_hex(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
 
 
 class LearnDemoError(ValueError):

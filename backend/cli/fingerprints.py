@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -92,6 +93,18 @@ def pretty_json(payload: object) -> str:
 
 def canonical_json_bytes(payload: object) -> bytes:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode("utf-8")
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def sha256_prefixed(data: bytes) -> str:
+    return f"sha256:{sha256_hex(data)}"
+
+
+def sha256_hex(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _is_receipt_file(path: Path) -> bool:

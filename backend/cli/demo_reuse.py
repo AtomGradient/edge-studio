@@ -12,12 +12,11 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 from backend.cli.demo_receipts import DEMO_RECEIPT_SCHEMA_VERSION, inspect_demo_receipt
-from backend.cli.fingerprints import pretty_json
+from backend.cli.fingerprints import pretty_json, utc_now_iso
 from backend.services.app_dirs import data_path
 
 
@@ -66,7 +65,7 @@ def run_demo_reuse(*, options: DemoReuseOptions) -> DemoReuseResult:
     run_id = str(receipt["run_id"])
     source_summary = _source_summary(receipt, receipt_path)
     app_reports: list[dict[str, Any]] = []
-    created_at = _utc_now_iso()
+    created_at = utc_now_iso()
 
     for app_id in apps:
         app_root = data_path("demo_runs", run_id, "reuse", app_id)
@@ -324,7 +323,3 @@ def _reuse_error(
             "model_loaded": False,
         },
     )
-
-
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")

@@ -11,15 +11,14 @@ local-only validator.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
+from backend.cli.demo_chat import _generate_streamed_answer
 from backend.cli.demo_receipts import (
     DEMO_RECEIPT_SCHEMA_VERSION,
     default_demo_receipt_path,
@@ -27,7 +26,13 @@ from backend.cli.demo_receipts import (
     write_demo_receipt,
 )
 from backend.cli.demo_samples import DemoSample, resolve_demo_sample
-from backend.cli.fingerprints import canonical_json_bytes, directory_manifest_hash
+from backend.cli.fingerprints import (
+    canonical_json_bytes,
+    directory_manifest_hash,
+    sha256_hex,
+    sha256_prefixed,
+    utc_now_iso,
+)
 from backend.cli.models import ModelWhereReport, where_model
 
 
@@ -116,7 +121,7 @@ def plan_imprint_run(
         "status": status,
         "sample": sample.as_plan_summary(),
         "model": model,
-        "question_sha256": _sha256_prefixed(options.question.encode("utf-8")),
+        "question_sha256": sha256_prefixed(options.question.encode("utf-8")),
         "raw_text_included": False,
         "network_used_during_plan": False,
         "planned_receipt_schema": DEMO_RECEIPT_SCHEMA_VERSION,
@@ -203,6 +208,7 @@ def _run_imprint_demo(
             _clear_mlx_cache,
             _contract_inputs,
             _fact_tool_schema_export,
+            _forward_last_logits,
             _render_combined_prefix,
             _tools_list,
         )
@@ -226,13 +232,12 @@ def _run_imprint_demo(
     # Step 1: Base answer (no Neural Imprint)
     _progress("base", "generating base answer without Neural Imprint")
     try:
-        _base_prompt, base_ids = _render_base_prompt(tokenizer, question)
         base_answer = _generate_answer(
-            model=model,
-            tokenizer=tokenizer,
-            input_ids=base_ids,
-            cache=None,
+            model_id=model_ref,
+            model_path=model_path,
+            prompt=question,
             max_tokens=options.max_tokens,
+            use_neural_imprint=False,
         )
     except Exception as exc:
         return _run_error("base_generation_failed", f"Failed to generate base answer: {exc}", options)
@@ -256,21 +261,21 @@ def _run_imprint_demo(
         cache = full_cache.capture_full_cache(
             model,
             prefix_ids,
-            forward_fn=lambda m, ids, cache=None: _forward_last_logits(m, ids, cache),
+            forward_fn=_forward_last_logits,
         )
 
         metadata, source, model_info, tokenizer_info, prefix_info = _contract_inputs(
             model_dir=model_path,
             tokenizer=tokenizer,
             model_id=model_id,
-            profile_body_sha256=_sha256_hex(profile_body.encode("utf-8")),
-            tool_schema_sha256=_sha256_hex(
+            profile_body_sha256=sha256_hex(profile_body.encode("utf-8")),
+            tool_schema_sha256=sha256_hex(
                 canonical_json_bytes(tool_schema_export)
             ),
             system_prompt=_build_system_prompt(profile_body),
             rendered_prefix=prefix_text,
             prefix_token_ids=prefix_ids,
-            created_at=_utc_now_iso(),
+            created_at=utc_now_iso(),
         )
 
         _save_receipt = full_cache.save_full_cache(
@@ -289,50 +294,30 @@ def _run_imprint_demo(
         del cache
         _clear_mlx_cache()
 
-    artifact_sha256 = _sha256_prefixed(artifact_path.read_bytes()) if artifact_path.is_file() else ""
-    metadata_sha256 = _sha256_prefixed(metadata_path.read_bytes()) if metadata_path.is_file() else ""
+    artifact_sha256 = sha256_prefixed(artifact_path.read_bytes()) if artifact_path.is_file() else ""
+    metadata_sha256 = sha256_prefixed(metadata_path.read_bytes()) if metadata_path.is_file() else ""
 
     # Step 3: Restore artifact and generate personalized answer
     _progress("restore", "restoring local Neural Imprint artifact")
-    restored_cache: Any | None = None
     try:
-        expected = {
-            field: metadata[field]
-            for field in (
-                "model_architecture",
-                "model_config_sha256",
-                "model_weights_fingerprint",
-                "tokenizer_json_sha256",
-                "tokenizer_config_sha256",
-                "chat_template_sha256",
-                "rendered_prefix_sha256",
-                "prefix_token_ids_sha256",
-                "enable_thinking",
-                "cache_backend",
-                "cache_backend_version",
-            )
-            if field in metadata
-        }
-        restored_cache = full_cache.restore_full_cache(
-            model,
-            artifact_path,
+        runtime_model_id = _restore_neural_imprint_runtime(
+            model_path=model_path,
+            artifact_path=artifact_path,
             metadata_path=metadata_path,
-            expected_metadata=expected,
+            artifact_id=f"demo-{run_id}",
         )
 
         _progress("personalized", "generating personalized answer with Neural Imprint active")
-        _suffix_text, suffix_ids = _render_persona_runtime_suffix(tokenizer, question=question)
         persona_answer = _generate_answer(
-            model=model,
-            tokenizer=tokenizer,
-            input_ids=suffix_ids,
-            cache=restored_cache,
+            model_id=runtime_model_id,
+            model_path=model_path,
+            prompt=question,
             max_tokens=options.max_tokens,
+            use_neural_imprint=True,
         )
     except Exception as exc:
         return _run_error("artifact_restore_failed", f"Failed to restore Neural Imprint artifact: {exc}", options)
     finally:
-        del restored_cache
         _clear_mlx_cache()
 
     elapsed = time.time() - started
@@ -345,9 +330,9 @@ def _run_imprint_demo(
     include_text = options.include_text
 
     comparison = {
-        "base_answer_sha256": _sha256_prefixed(base_answer["text"].encode("utf-8")),
+        "base_answer_sha256": sha256_prefixed(base_answer["text"].encode("utf-8")),
         "base_answer_tokens": base_answer["token_count"],
-        "personalized_answer_sha256": _sha256_prefixed(persona_answer["text"].encode("utf-8")),
+        "personalized_answer_sha256": sha256_prefixed(persona_answer["text"].encode("utf-8")),
         "personalized_answer_tokens": persona_answer["token_count"],
         "answers_differ": base_answer["text"] != persona_answer["text"],
     }
@@ -662,7 +647,7 @@ def format_imprint_compare(result: ImprintCompareResult) -> str:
 # ---------------------------------------------------------------------------
 
 def _base_plan(options: ImprintPlanOptions) -> dict[str, Any]:
-    run_id = f"edge-run-plan-{_sha256_hex((options.sample_id + options.model_ref + options.question)[:512].encode())[:12]}"
+    run_id = f"edge-run-plan-{sha256_hex((options.sample_id + options.model_ref + options.question)[:512].encode())[:12]}"
     return {
         "schema_version": IMPRINT_PLAN_SCHEMA_VERSION,
         "ok": False,
@@ -676,7 +661,7 @@ def _base_plan(options: ImprintPlanOptions) -> dict[str, Any]:
 
 
 def _run_id(options: ImprintPlanOptions) -> str:
-    fingerprint = _sha256_hex(
+    fingerprint = sha256_hex(
         (options.sample_id + options.model_ref + options.question + str(time.time()))[:512].encode()
     )[:12]
     return f"edge-run-{fingerprint}"
@@ -767,122 +752,49 @@ def _progress(tag: str, message: str) -> None:
     print(f"[{tag}] {message}", file=sys.stderr)
 
 
-def _utc_now_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def _sha256_prefixed(data: bytes) -> str:
-    return f"sha256:{_sha256_hex(data)}"
-
-
-def _sha256_hex(data: bytes) -> str:
-    return hashlib.sha256(data).hexdigest()
-
-
-# ---------------------------------------------------------------------------
-# MLX inference helpers (lazy-import safe, no top-level MLX dependency)
-# ---------------------------------------------------------------------------
-
-def _encode(tokenizer: Any, text: str) -> list[int]:
-    if hasattr(tokenizer, "encode"):
-        tokens = tokenizer.encode(text)
-    else:
-        tokens = tokenizer._tokenizer.encode(text)
-    return list(tokens) if not isinstance(tokens, list) else tokens
-
-
-def _decode(tokenizer: Any, token_ids: Sequence[int]) -> str:
-    try:
-        if hasattr(tokenizer, "decode"):
-            value = tokenizer.decode(list(token_ids))
-        else:
-            value = tokenizer._tokenizer.decode(list(token_ids))
-        return value if isinstance(value, str) else str(value)
-    except Exception:
-        return "".join(str(t) for t in token_ids)
-
-
-def _eos_token_ids(tokenizer: Any) -> set[int]:
-    ids: set[int] = set()
-    for attr in ("eos_token_id",):
-        value = getattr(tokenizer, attr, None)
-        if isinstance(value, int) and value >= 0:
-            ids.add(int(value))
-    for token in ("<|im_end|>", "<|endoftext|>"):
-        tok = tokenizer._tokenizer if hasattr(tokenizer, "_tokenizer") else tokenizer
-        try:
-            if hasattr(tok, "token_to_id"):
-                value = tok.token_to_id(token)
-            elif hasattr(tok, "convert_tokens_to_ids"):
-                value = tok.convert_tokens_to_ids(token)
-            else:
-                continue
-            if isinstance(value, int) and value >= 0:
-                ids.add(int(value))
-        except Exception:
-            continue
-    return ids
-
-
-def _render_base_prompt(tokenizer: Any, question: str) -> tuple[str, list[int]]:
-    from backend.api.chat_llm import _apply_chat_template as apply_runtime_chat_template
-
-    rendered = apply_runtime_chat_template(tokenizer, question, [], False)
-    return rendered, _encode(tokenizer, rendered)
-
-
-def _render_persona_runtime_suffix(
-    tokenizer: Any,
+def _restore_neural_imprint_runtime(
     *,
-    question: str,
-) -> tuple[str, list[int]]:
-    from backend.api.chat_llm import _apply_neural_imprint_turn_template
+    model_path: Path,
+    artifact_path: Path,
+    metadata_path: Path,
+    artifact_id: str,
+) -> str:
+    from backend.services.model_manager import manager
+    from backend.services.neural_imprint_runtime import restore_neural_imprint_for_model
 
-    rendered = _apply_neural_imprint_turn_template(tokenizer, question, [], False)
-    return rendered, _encode(tokenizer, rendered)
-
-
-def _forward_last_logits(model: Any, token_ids: Sequence[int], cache: Any = None) -> Any:
-    import mlx.core as mx
-
-    arr = mx.array(list(token_ids), dtype=mx.int32)[None, :]
-    out = model(arr, cache=cache) if cache is not None else model(arr)
-    logits = out[0] if isinstance(out, tuple) else out
-    last = logits[:, -1, :].astype(mx.float32)
-    mx.eval(last)
-    return last[0]
+    loaded = manager.load_model(str(model_path))
+    status = restore_neural_imprint_for_model(
+        model_id=loaded.model_id,
+        artifact_path=artifact_path,
+        sidecar_path=metadata_path,
+        artifact_id=artifact_id,
+    )
+    if not status.active or not status.model_id:
+        raise RuntimeError("Neural Imprint restore completed without an active runtime state.")
+    return status.model_id
 
 
 def _generate_answer(
     *,
-    model: Any,
-    tokenizer: Any,
-    input_ids: Sequence[int],
-    cache: Any,
+    model_id: str,
+    model_path: Path,
+    prompt: str,
     max_tokens: int,
+    use_neural_imprint: bool,
 ) -> dict[str, Any]:
-    import mlx.core as mx
-
     started = time.time()
-    if cache is None:
-        from backend.core.dsr_cache import make_prompt_cache
-
-        cache = make_prompt_cache(model)
-    logits = _forward_last_logits(model, input_ids, cache=cache)
-    generated: list[int] = []
-    stops = _eos_token_ids(tokenizer)
-
-    for _ in range(max_tokens):
-        token = int(mx.argmax(logits, axis=-1).item())
-        if token in stops:
-            break
-        generated.append(token)
-        logits = _forward_last_logits(model, [token], cache=cache)
-
-    text = _decode(tokenizer, generated).strip()
+    answer = _generate_streamed_answer(
+        model_id=model_id,
+        model_path=model_path,
+        prompt=prompt,
+        history=[],
+        max_tokens=max(1, max_tokens),
+        use_neural_imprint=use_neural_imprint,
+    )
+    text = str(answer.get("text") or "")
     return {
         "text": text,
-        "text_sha256": _sha256_hex(text.encode("utf-8")),
-        "token_count": len(generated),
-        "elapsed_seconds": round(time.time() - started, 2),
+        "text_sha256": sha256_hex(text.encode("utf-8")),
+        "token_count": int(answer.get("token_count") or 0),
+        "elapsed_seconds": round(float(answer.get("elapsed_seconds") or (time.time() - started)), 2),
     }
