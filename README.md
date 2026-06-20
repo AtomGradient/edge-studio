@@ -31,12 +31,12 @@ source .venv/bin/activate
 uv pip install edge-studio
 ```
 
-Current release candidate: `0.0.1rc6`.
+Current release candidate: `0.0.1rc7`.
 
 For a deterministic RC install:
 
 ```bash
-python -m pip install edge-studio==0.0.1rc6
+python -m pip install edge-studio==0.0.1rc7
 ```
 
 The package installs one command-line entry point:
@@ -88,11 +88,16 @@ Exit with `/exit`.
 Run the local correction-learning demo once the baseline model is ready:
 
 ```bash
-edge demo learn run --model qwen3.5-9b-4bit
+edge demo learn run \
+  --sample finance_conservative_cashflow_v1 \
+  --model qwen3.5-9b-4bit \
+  --max-tokens 160 \
+  --include-text
 ```
 
-The demo exercises local receipts, correction capture, Neural Imprint artifact
-generation, and a follow-up query without bundling internal evaluation data.
+The demo uses a synthetic finance preference to exercise local receipts,
+correction capture, Neural Imprint artifact generation, and a follow-up query
+without bundling internal evaluation data.
 
 For the full walkthrough, SDK integration paths, and API references, use the
 Edge Developers documentation:
