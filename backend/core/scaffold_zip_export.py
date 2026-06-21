@@ -29,6 +29,8 @@ import zipfile
 from dataclasses import dataclass
 from typing import Callable
 
+import yaml
+
 from backend.services.scaffold_template import (
     EDGE_SCAFFOLD_DIR_ENV,
     ScaffoldTemplateError,
@@ -298,6 +300,8 @@ def export_scaffold_zip(
         yml_path = os.path.join(scaffold_dest, "project.yml")
         _assert_contains(yml_path, f"name: {safe_name}", "Step 7: project.yml target name")
         _assert_contains(yml_path, f"{safe_name}_model_config", "Step 7: project.yml model config ref")
+        _assert_contains(yml_path, "schemes:", "Step 7: project.yml schemes")
+        _assert_contains(yml_path, f"  {safe_name}:", "Step 7: project.yml app scheme")
 
         # ── Step 8: Rename Swift entry struct ────
         _p("Updating Swift entry point...", 0.65)
@@ -842,6 +846,45 @@ def _ensure_project_yml_odr(content: str, *, model_dir: str, model_name: str) ->
     return content
 
 
+def _ensure_project_yml_scheme(content: str, *, safe_name: str) -> str:
+    try:
+        parsed = yaml.safe_load(content) or {}
+    except yaml.YAMLError:
+        parsed = {}
+    schemes = parsed.get("schemes") if isinstance(parsed, dict) else None
+    if isinstance(schemes, dict) and safe_name in schemes:
+        return content
+
+    scheme_entry = (
+        f"  {safe_name}:\n"
+        "    build:\n"
+        "      targets:\n"
+        f"        {safe_name}: all\n"
+        "    run:\n"
+        "      config: Release\n"
+        "    archive:\n"
+        "      config: Release\n"
+    )
+    if re.search(r"^schemes:\s*$", content, flags=re.MULTILINE):
+        return re.sub(
+            r"^schemes:\n",
+            "schemes:\n" + scheme_entry,
+            content,
+            count=1,
+            flags=re.MULTILINE,
+        )
+
+    if not re.search(r"^targets:\s*$", content, flags=re.MULTILINE):
+        raise ScaffoldExportError("project.yml missing top-level targets section for scheme insertion")
+    return re.sub(
+        r"^targets:\n",
+        "schemes:\n" + scheme_entry + "\ntargets:\n",
+        content,
+        count=1,
+        flags=re.MULTILINE,
+    )
+
+
 def _customize_project_yml(
     scaffold_dest: str,
     safe_name: str,
@@ -964,6 +1007,8 @@ def _customize_project_yml(
         content = content.replace('    entitlements:\n', f'{async_dep}\n    entitlements:\n', 1)
     if markdown_dep not in content:
         content = content.replace('    entitlements:\n', f'{markdown_dep}\n    entitlements:\n', 1)
+
+    content = _ensure_project_yml_scheme(content, safe_name=safe_name)
 
     with open(yml_path, "w") as f:
         f.write(content)

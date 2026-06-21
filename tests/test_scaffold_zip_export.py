@@ -208,6 +208,9 @@ def test_export_scaffold_zip_creates_expected_archive_with_mocked_xcodegen(
 
         project_yml = zf.read("TestApp/project.yml").decode("utf-8")
         assert "name: TestApp" in project_yml
+        assert "schemes:" in project_yml
+        assert "  TestApp:" in project_yml
+        assert "        TestApp: all" in project_yml
         assert "KnownAssetTags:" in project_yml
         assert "resourceTags:" in project_yml
         assert f"path: {json.dumps(str(model_dir))}" in project_yml
@@ -268,7 +271,9 @@ def test_exported_project_yml_preserves_odr_after_xcodegen_regenerate(
 
     pbxproj_path = project_root / "RegenApp.xcodeproj" / "project.pbxproj"
     pbxproj_text = pbxproj_path.read_text(encoding="utf-8")
+    scheme_path = project_root / "RegenApp.xcodeproj" / "xcshareddata" / "xcschemes" / "RegenApp.xcscheme"
 
+    assert scheme_path.is_file()
     assert "KnownAssetTags = model;" not in pbxproj_text
     assert re.search(r"KnownAssetTags = \(\s*model,?\s*\);", pbxproj_text)
     assert re.search(r"ASSET_TAGS = \(model,?\s*\);", pbxproj_text)

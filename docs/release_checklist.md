@@ -24,7 +24,7 @@ the committed SHA and the `edge-developers` documentation sync.
 
 - Run `edge export scaffold` from the PyPI-installed package.
 - Unzip the exported app and run `xcodegen generate`.
-- Confirm model ODR markers survive regeneration.
+- Confirm model ODR markers and the shared app scheme survive regeneration.
 - Run `xcodebuild -list` and confirm there is no `KnownAssetTags` warning.
 
 ## Developer Docs Sync
