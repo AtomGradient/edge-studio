@@ -17,6 +17,35 @@ from backend.cli import main as cli_main
 from backend.cli.models import CatalogResolution, LocalModel, ModelWhereReport
 
 
+def _fake_where_for_model(model_dir: Path) -> ModelWhereReport:
+    return ModelWhereReport(
+        schema_version="edge.models.where.report.v1",
+        status="ok",
+        resolution=CatalogResolution(
+            status="resolved",
+            input="qwen3.5-9b-4bit",
+            model_id="qwen3.5-9b-4bit",
+            name="Qwen3.5-9B-4bit",
+            download_hint="mlx-community/Qwen3.5-9B-4bit",
+            category="llm",
+            size_gb=5.0,
+            catalog_source="test",
+            catalog_version="test",
+            matched_by="id",
+            alternates=[],
+        ),
+        local_matches=[
+            LocalModel(
+                name="Qwen3.5-9B-4bit",
+                path=str(model_dir),
+                size_bytes=0,
+                complete=True,
+            )
+        ],
+        fetch_command=None,
+    )
+
+
 def test_studio_command_dispatches_local_server(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -260,6 +289,84 @@ def test_demo_chat_interactive_streams_tokens_and_writes_receipts(
     assert [receipt["history_turn_count"] for receipt in receipts] == [1, 2]
     assert [receipt["answer_tokens"] for receipt in receipts] == [2, 2]
     assert all(receipt["raw_text_included"] is False for receipt in receipts)
+
+
+def test_demo_chat_interactive_retries_incomplete_first_generation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "Qwen3.5-9B-4bit"
+    model_dir.mkdir()
+    calls = 0
+    receipts: list[dict] = []
+
+    monkeypatch.setattr(demo_chat, "where_model", lambda *_args, **_kwargs: _fake_where_for_model(model_dir))
+    monkeypatch.setattr(demo_chat, "_run_mlx_sync", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(demo_chat, "directory_manifest_hash", lambda _path: {"sha256": "sha256:model"})
+
+    def fake_streamed_answer(**kwargs) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError(demo_chat.INCOMPLETE_GENERATION_MESSAGE)
+        print("stable answer", end="", file=kwargs["output_stream"])
+        return {"text": "stable answer", "token_count": 2, "elapsed_seconds": 0.01}
+
+    def fake_write(receipt: dict, *, run_id: str | None = None, path: Path | None = None) -> Path:
+        receipts.append(dict(receipt))
+        return tmp_path / (run_id or "receipt") / "chat_receipt.json"
+
+    monkeypatch.setattr(demo_chat, "_generate_streamed_answer", fake_streamed_answer)
+    monkeypatch.setattr(demo_chat, "write_chat_receipt", fake_write)
+
+    output = io.StringIO()
+    result = demo_chat.run_demo_chat_interactive(
+        options=demo_chat.ChatRunOptions(model_ref="qwen3.5-9b-4bit", interactive=True),
+        input_stream=io.StringIO("hello\n/exit\n"),
+        output_stream=output,
+    )
+
+    assert result.ok is True
+    assert result.exit_code == 0
+    assert result.turn_count == 1
+    assert calls == 2
+    assert len(receipts) == 1
+    assert receipts[0]["answer_sha256"] == demo_chat.sha256_prefixed(b"stable answer")
+    assert "assistant> stable answer" in output.getvalue()
+
+
+def test_demo_chat_interactive_reports_warmup_retry_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "Qwen3.5-9B-4bit"
+    model_dir.mkdir()
+    calls = 0
+
+    monkeypatch.setattr(demo_chat, "where_model", lambda *_args, **_kwargs: _fake_where_for_model(model_dir))
+    monkeypatch.setattr(demo_chat, "_run_mlx_sync", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(demo_chat, "directory_manifest_hash", lambda _path: {"sha256": "sha256:model"})
+
+    def fake_streamed_answer(**_kwargs) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError(demo_chat.INCOMPLETE_GENERATION_MESSAGE)
+
+    monkeypatch.setattr(demo_chat, "_generate_streamed_answer", fake_streamed_answer)
+
+    output = io.StringIO()
+    result = demo_chat.run_demo_chat_interactive(
+        options=demo_chat.ChatRunOptions(model_ref="qwen3.5-9b-4bit", interactive=True),
+        input_stream=io.StringIO("hello\n/exit\n"),
+        output_stream=output,
+    )
+
+    assert result.ok is False
+    assert result.exit_code == 1
+    assert result.turn_count == 0
+    assert calls == 2
+    assert demo_chat.INCOMPLETE_GENERATION_RETRY_MESSAGE in output.getvalue()
+    assert demo_chat.INCOMPLETE_GENERATION_MESSAGE not in output.getvalue()
 
 
 def test_demo_chat_interactive_with_imprint_restore_failure_does_not_fallback(

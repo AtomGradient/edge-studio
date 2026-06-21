@@ -38,6 +38,10 @@ NEURAL_IMPRINT_METADATA_NAME = "neural_imprint_metadata.json"
 DEFAULT_MODEL_REF = "qwen3.5-9b-4bit"
 DEFAULT_MAX_TOKENS = 2048
 MAX_CONFIGURED_TOKENS = 4096
+INCOMPLETE_GENERATION_MESSAGE = "Generation finished without a complete event."
+INCOMPLETE_GENERATION_RETRY_MESSAGE = (
+    "Model warm-up did not finish. Try the same message again; if it repeats, restart `edge demo chat`."
+)
 
 
 @dataclass(frozen=True)
@@ -134,7 +138,7 @@ def run_demo_chat(
 
     try:
         _progress("generate", f"max_tokens={max_tokens}")
-        answer = _generate_streamed_answer(
+        answer = _generate_streamed_answer_with_retry(
             model_id=imprint_state.model_id if imprint_state is not None else model_ref,
             model_path=model_path,
             prompt=options.prompt,
@@ -264,7 +268,7 @@ def run_demo_chat_interactive(
         try:
             _progress("generate", f"turn={turn_index + 1} max_tokens={max_tokens}")
             print("assistant> ", end="", flush=True, file=stdout)
-            answer = _generate_streamed_answer(
+            answer = _generate_streamed_answer_with_retry(
                 model_id=imprint_state.model_id if imprint_state is not None else model_ref,
                 model_path=model_path,
                 prompt=prompt,
@@ -636,6 +640,50 @@ def _generate_streamed_answer(
     )
 
 
+def _generate_streamed_answer_with_retry(
+    *,
+    model_id: str,
+    model_path: Path,
+    prompt: str,
+    history: list[dict[str, str]],
+    max_tokens: int,
+    output_stream: io.TextIOBase | None = None,
+    use_neural_imprint: bool = False,
+) -> dict[str, Any]:
+    try:
+        return _generate_streamed_answer(
+            model_id=model_id,
+            model_path=model_path,
+            prompt=prompt,
+            history=history,
+            max_tokens=max_tokens,
+            output_stream=output_stream,
+            use_neural_imprint=use_neural_imprint,
+        )
+    except Exception as exc:
+        if not _is_incomplete_generation_error(exc):
+            raise
+        _progress("retry", "generation ended before completion; retrying once")
+        try:
+            return _generate_streamed_answer(
+                model_id=model_id,
+                model_path=model_path,
+                prompt=prompt,
+                history=history,
+                max_tokens=max_tokens,
+                output_stream=output_stream,
+                use_neural_imprint=use_neural_imprint,
+            )
+        except Exception as retry_exc:
+            if _is_incomplete_generation_error(retry_exc):
+                raise RuntimeError(INCOMPLETE_GENERATION_RETRY_MESSAGE) from retry_exc
+            raise
+
+
+def _is_incomplete_generation_error(exc: Exception) -> bool:
+    return INCOMPLETE_GENERATION_MESSAGE in str(exc)
+
+
 async def _generate_streamed_answer_async(
     *,
     model_id: str,
@@ -725,7 +773,7 @@ async def _generate_streamed_answer_async(
             elif event_type == "cancelled":
                 raise RuntimeError("Generation was cancelled.")
 
-        raise RuntimeError("Generation finished without a complete event.")
+        raise RuntimeError(INCOMPLETE_GENERATION_MESSAGE)
     finally:
         if not future.done():
             cancel_event.set()
