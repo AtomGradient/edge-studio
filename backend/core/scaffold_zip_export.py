@@ -45,16 +45,21 @@ SCAFFOLD_SRC = str(_SOURCE_TREE_SCAFFOLD) if _SOURCE_TREE_SCAFFOLD is not None e
 _export_lock = threading.Lock()
 
 _EXCLUDE_DIRS = {
+    ".github",
     ".git",
     ".build",
     ".ai-mailbox",
     ".claude",
+    ".codex",
+    ".vscode",
     ".pytest_cache",
+    "archive",
     "DerivedData",
     "build",
+    "docs",
     "xcuserdata",
 }
-_EXCLUDE_FILES = {".DS_Store", "Package.resolved"}
+_EXCLUDE_FILES = {".DS_Store", "AGENTS.md", "CLAUDE.md", "Package.resolved"}
 _MIN_SCAFFOLD_VERSION = 3
 _DEFAULT_SCAFFOLD_DIRECTION_SET_ID = "finance_consumer"
 _DIRECTION_SET_TO_SAMPLE_DOMAIN = {

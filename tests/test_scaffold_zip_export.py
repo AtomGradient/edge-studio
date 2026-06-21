@@ -29,10 +29,20 @@ def _write_safetensors(path: Path, header: dict) -> None:
 def _write_minimal_scaffold(root: Path) -> None:
     (root / ".scaffold_version").write_text("3\n", encoding="utf-8")
     (root / ".min_runtime_version").write_text("1.2.3\n", encoding="utf-8")
+    (root / ".github/workflows").mkdir(parents=True)
+    (root / ".codex").mkdir()
     (root / "EdgeScaffold/App").mkdir(parents=True)
     (root / "EdgeScaffold/AI").mkdir(parents=True)
     (root / "Resources/RPP").mkdir(parents=True)
+    (root / "archive").mkdir()
+    (root / "docs/eval").mkdir(parents=True)
 
+    (root / ".github/workflows/ci.yml").write_text("name: ci\n", encoding="utf-8")
+    (root / ".codex/config.json").write_text("{}\n", encoding="utf-8")
+    (root / "AGENTS.md").write_text("agent notes\n", encoding="utf-8")
+    (root / "CLAUDE.md").write_text("review notes\n", encoding="utf-8")
+    (root / "archive/old.txt").write_text("old\n", encoding="utf-8")
+    (root / "docs/eval/run.log").write_text("eval log\n", encoding="utf-8")
     (root / "EdgeScaffold/App/EdgeScaffoldApp.swift").write_text(
         "import SwiftUI\nstruct EdgeScaffoldApp: App { var body: some Scene { WindowGroup { Text(\"hi\") } } }\n",
         encoding="utf-8",
@@ -180,6 +190,12 @@ def test_export_scaffold_zip_creates_expected_archive_with_mocked_xcodegen(
         assert "TestApp/README.md" in names
         assert "TestApp/Resources/RPP/finance_consumer_qwen_layer_3.safetensors" in names
         assert all("Qwen3-Test-4bit/model.safetensors" not in name for name in names)
+        assert "TestApp/AGENTS.md" not in names
+        assert "TestApp/CLAUDE.md" not in names
+        assert all(not name.startswith("TestApp/.github/") for name in names)
+        assert all(not name.startswith("TestApp/.codex/") for name in names)
+        assert all(not name.startswith("TestApp/archive/") for name in names)
+        assert all(not name.startswith("TestApp/docs/") for name in names)
 
         config = zf.read("TestApp/TestApp/App/ScaffoldConfig.swift").decode("utf-8")
         assert 'static let appName = "test app!"' in config
