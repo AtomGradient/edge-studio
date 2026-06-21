@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import re
+import shutil
 import struct
 import zipfile as zipfile_module
 import zipfile
@@ -226,6 +228,60 @@ def test_export_scaffold_zip_creates_expected_archive_with_mocked_xcodegen(
         assert "`Resources/RPP` is empty" in readme
         assert "## What This Repo Is" not in readme
         assert "Current minimum EdgeKit version" not in readme
+
+
+def test_patch_xcodeproj_odr_writes_known_asset_tags_as_array(tmp_path: Path) -> None:
+    if not shutil.which("xcodegen") and not Path("/opt/homebrew/bin/xcodegen").is_file():
+        pytest.skip("xcodegen is required for the project serialization regression test")
+
+    scaffold_root = tmp_path / "edge-scaffold"
+    scaffold_root.mkdir()
+    _write_minimal_scaffold(scaffold_root)
+    project_yml = scaffold_root / "project.yml"
+    project_yml.write_text(
+        """
+name: EdgeScaffold
+targets:
+  EdgeScaffold:
+    type: application
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - EdgeScaffold
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: com.atomgradient.EdgeScaffold
+      INFOPLIST_FILE: EdgeScaffold/Info.plist
+      INFOPLIST_KEY_CFBundleDisplayName: EdgeScaffold
+      DEVELOPMENT_TEAM: ""
+    entitlements:
+      path: EdgeScaffold/EdgeScaffold.entitlements
+""",
+        encoding="utf-8",
+    )
+    model_dir = tmp_path / "models" / "Qwen3-Test-4bit"
+    model_dir.mkdir(parents=True)
+
+    scaffold._run_xcodegen(str(scaffold_root), "EdgeScaffold")
+    scaffold._patch_xcodeproj_odr(
+        str(scaffold_root),
+        "EdgeScaffold",
+        str(model_dir),
+        model_dir.name,
+    )
+
+    pbxproj_path = scaffold_root / "EdgeScaffold.xcodeproj" / "project.pbxproj"
+    pbxproj_text = pbxproj_path.read_text(encoding="utf-8")
+
+    assert "KnownAssetTags = model;" not in pbxproj_text
+    assert re.search(r"KnownAssetTags = \(\s*model,?\s*\);", pbxproj_text)
+
+    from pbxproj import XcodeProject
+
+    project = XcodeProject.load(str(pbxproj_path))
+    attrs = project.objects[project.rootObject].get("attributes", {})
+    known_tags = attrs.get("KnownAssetTags", None)
+    assert isinstance(known_tags, list)
+    assert known_tags == ["model"]
 
 
 def test_scaffold_template_downloads_fixed_public_archive_when_not_local(

@@ -1075,9 +1075,21 @@ def _patch_xcodeproj_odr(
     # ── 5. KnownAssetTags in project attributes ─
     root_obj = project.objects[project.rootObject]
     attrs = root_obj.get("attributes", {})
-    if "KnownAssetTags" not in attrs:
-        attrs["KnownAssetTags"] = ["model"]
-        root_obj["attributes"] = attrs
+    existing_tags = attrs.get("KnownAssetTags", None)
+    if isinstance(existing_tags, list):
+        known_tags = list(existing_tags)
+    elif existing_tags:
+        known_tags = [str(existing_tags)]
+    else:
+        known_tags = []
+    if odr_tag not in known_tags:
+        known_tags.append(odr_tag)
+
+    if isinstance(attrs, PBXGenericObject):
+        attrs.KnownAssetTags = known_tags
+    else:
+        attrs = PBXGenericObject().parse({**attrs, "KnownAssetTags": known_tags})
+    root_obj["attributes"] = attrs
 
     project.save()
 
