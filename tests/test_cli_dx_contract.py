@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import numpy as np
 import pytest
+from safetensors.numpy import save_file
 
 from backend.cli import doctor, main, model_fetch, models
 from backend.cli.fingerprints import model_dir_integrity
@@ -52,6 +54,21 @@ def test_model_integrity_rejects_partial_download_artifacts(tmp_path: Path) -> N
     assert integrity.complete is False
     assert "partial_download_files_present" in integrity.issues
     assert any(issue.startswith("invalid_safetensors:model.safetensors") for issue in integrity.issues)
+
+
+def test_model_integrity_rejects_truncated_safetensors_payload(tmp_path: Path) -> None:
+    model_dir = tmp_path / "Qwen3.5-9B-4bit"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    weights_path = model_dir / "model.safetensors"
+    save_file({"weight": np.arange(128, dtype=np.float32)}, weights_path)
+    data = weights_path.read_bytes()
+    weights_path.write_bytes(data[:-32])
+
+    integrity = model_dir_integrity(model_dir)
+
+    assert integrity.complete is False
+    assert "invalid_safetensors:model.safetensors:data_offsets_exceed_file_size" in integrity.issues
 
 
 def test_where_marks_catalog_match_incomplete_when_size_is_too_small(

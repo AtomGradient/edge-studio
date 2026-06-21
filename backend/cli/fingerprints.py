@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import struct
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -89,6 +90,10 @@ def _safetensors_index_issues(index_path: Path) -> list[str]:
 
 def _safetensors_issue(path: Path) -> str | None:
     try:
+        offset_issue = _safetensors_offset_issue(path)
+        if offset_issue:
+            return offset_issue
+
         from safetensors import safe_open
 
         with safe_open(path, framework="np") as handle:
@@ -98,6 +103,45 @@ def _safetensors_issue(path: Path) -> str | None:
         return None
     except Exception as exc:  # noqa: BLE001
         return f"invalid_safetensors:{path.name}:{str(exc)[:160]}"
+
+
+def _safetensors_offset_issue(path: Path) -> str | None:
+    try:
+        file_size = path.stat().st_size
+        with path.open("rb") as handle:
+            raw_header_len = handle.read(8)
+            if len(raw_header_len) != 8:
+                return f"invalid_safetensors:{path.name}:missing_header_length"
+            header_len = struct.unpack("<Q", raw_header_len)[0]
+            header = handle.read(header_len)
+        data_start = 8 + header_len
+        if data_start > file_size:
+            return f"invalid_safetensors:{path.name}:header_exceeds_file_size"
+        payload = json.loads(header.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, struct.error) as exc:
+        return f"invalid_safetensors:{path.name}:{str(exc)[:160]}"
+
+    if not isinstance(payload, dict):
+        return f"invalid_safetensors:{path.name}:invalid_header"
+
+    for tensor_name, metadata in payload.items():
+        if tensor_name == "__metadata__":
+            continue
+        if not isinstance(metadata, dict):
+            return f"invalid_safetensors:{path.name}:invalid_tensor_metadata"
+        offsets = metadata.get("data_offsets")
+        if not (
+            isinstance(offsets, list)
+            and len(offsets) == 2
+            and all(isinstance(value, int) for value in offsets)
+        ):
+            return f"invalid_safetensors:{path.name}:missing_data_offsets"
+        begin, end = offsets
+        if begin < 0 or end < begin:
+            return f"invalid_safetensors:{path.name}:invalid_data_offsets"
+        if data_start + end > file_size:
+            return f"invalid_safetensors:{path.name}:data_offsets_exceed_file_size"
+    return None
 
 
 def dir_size_bytes(path: Path) -> int:
