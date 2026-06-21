@@ -71,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     doctor = subparsers.add_parser("doctor", help="Run read-only environment checks")
     doctor.add_argument("--json", action="store_true", help="Emit a machine-readable report")
+    doctor.add_argument("--dev", action="store_true", help="Include local monorepo contributor checks")
 
     models = subparsers.add_parser("models", help="Inspect local model readiness")
     model_subparsers = models.add_subparsers(dest="models_command", required=True)
@@ -228,7 +229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_studio_server(host=args.host, port=args.port)
 
     if args.command == "doctor":
-        report = run_doctor()
+        report = run_doctor(include_dev_checks=args.dev)
         if args.json:
             print(report.to_json())
         else:

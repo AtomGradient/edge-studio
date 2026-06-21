@@ -42,6 +42,49 @@ def test_doctor_checks_public_distribution_name(monkeypatch: pytest.MonkeyPatch)
     assert result.details["missing"] == []
 
 
+def test_default_doctor_omits_monorepo_preview_repo_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    def ok_check(check_id: str) -> doctor.CheckResult:
+        return doctor.CheckResult(check_id, "ok", check_id, {})
+
+    monkeypatch.setattr(doctor, "_check_python_packages", lambda: ok_check("python.packages"))
+    monkeypatch.setattr(doctor, "_check_node_and_npm", lambda _runner: ok_check("node.toolchain"))
+    monkeypatch.setattr(doctor, "_check_xcode_and_swift", lambda _runner: ok_check("apple.toolchain"))
+    monkeypatch.setattr(doctor, "_check_model_cache_roots", lambda _env: ok_check("model.cache"))
+    monkeypatch.setattr(doctor, "_check_backend_health", lambda _env, _getter: ok_check("backend.health"))
+    monkeypatch.setattr(
+        doctor,
+        "_check_preview_repos",
+        lambda _root: pytest.fail("default edge doctor must not check sibling preview repos"),
+    )
+
+    report = doctor.run_doctor(
+        environ={"VIRTUAL_ENV": "/venv"},
+        python_version=(3, 11, 9),
+        python_executable="/python",
+    )
+
+    ids = [check.id for check in report.checks]
+    assert "preview.repos" not in ids
+
+
+def test_dev_doctor_keeps_repo_check_without_internal_access_language(tmp_path: Path) -> None:
+    report = doctor.run_doctor(
+        project_root=tmp_path,
+        environ={"VIRTUAL_ENV": "/venv"},
+        python_version=(3, 11, 9),
+        python_executable="/python",
+        command_runner=lambda _args, _timeout: doctor.CommandResult(0, "v20.0.0", ""),
+        health_getter=lambda _url, _timeout: (200, "{}"),
+        include_dev_checks=True,
+    )
+
+    repo_check = next(check for check in report.checks if check.id == "preview.repos")
+    assert repo_check.status == "warn"
+    assert repo_check.remediation is not None
+    assert "internal preview" not in repo_check.remediation
+    assert "SSH access" not in repo_check.remediation
+
+
 def test_model_integrity_rejects_partial_download_artifacts(tmp_path: Path) -> None:
     model_dir = tmp_path / "Qwen3.5-9B-4bit"
     model_dir.mkdir()

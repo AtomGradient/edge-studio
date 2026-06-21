@@ -79,6 +79,7 @@ def run_doctor(
     python_executable: str | None = None,
     command_runner: CommandRunner | None = None,
     health_getter: HealthGetter | None = None,
+    include_dev_checks: bool = False,
 ) -> DoctorReport:
     """Run the B1 doctor checks without mutating local state."""
 
@@ -95,10 +96,11 @@ def run_doctor(
         _check_python_packages(),
         _check_node_and_npm(runner),
         _check_xcode_and_swift(runner),
-        _check_preview_repos(root),
         _check_model_cache_roots(env),
         _check_backend_health(env, get_health),
     ]
+    if include_dev_checks:
+        checks.append(_check_preview_repos(root))
     return DoctorReport(
         schema_version=SCHEMA_VERSION,
         overall_status=_overall_status(checks),
@@ -287,7 +289,7 @@ def _check_preview_repos(project_root: Path) -> CheckResult:
             status="warn",
             summary=f"Missing preview repo manifests: {', '.join(sorted(missing))}",
             details={"found": found, "missing": missing},
-            remediation="Some preview repositories may require AtomGradient internal preview or SSH access.",
+            remediation="Clone the public companion repositories next to edge-studio when working on monorepo development.",
         )
     return CheckResult(
         id="preview.repos",
