@@ -17,7 +17,7 @@ from .app_dirs import cache_path
 
 
 EDGE_SCAFFOLD_REPOSITORY = "https://github.com/AtomGradient/edge-scaffold"
-EDGE_SCAFFOLD_TEMPLATE_REF = "3be2ff826b1a5c9f67ff5af25f66bccaebc20164"
+EDGE_SCAFFOLD_TEMPLATE_REF = "a3b57f326e72ce943722ab04281fbf8e54013cb3"
 EDGE_SCAFFOLD_DIR_ENV = "EDGE_SCAFFOLD_DIR"
 
 
