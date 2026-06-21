@@ -20,9 +20,15 @@ from backend.cli.models import CatalogResolution, LocalModel, ModelWhereReport
 def test_studio_command_dispatches_local_server(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_run_studio_server(*, host: str | None = None, port: int | None = None) -> int:
+    def fake_run_studio_server(
+        *,
+        host: str | None = None,
+        port: int | None = None,
+        verbose: bool = False,
+    ) -> int:
         captured["host"] = host
         captured["port"] = port
+        captured["verbose"] = verbose
         return 0
 
     monkeypatch.setattr(cli_main, "run_studio_server", fake_run_studio_server)
@@ -30,7 +36,7 @@ def test_studio_command_dispatches_local_server(monkeypatch: pytest.MonkeyPatch)
     exit_code = cli_main.main(["studio", "--host", "127.0.0.1", "--port", "18842"])
 
     assert exit_code == 0
-    assert captured == {"host": "127.0.0.1", "port": 18842}
+    assert captured == {"host": "127.0.0.1", "port": 18842, "verbose": False}
 
 
 def test_demo_chat_requires_prompt_unless_interactive() -> None:

@@ -5,7 +5,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from typing import Mapping, Sequence
 
 import numpy as np
 import pytest
@@ -23,6 +25,23 @@ def test_edge_version_flag_prints_distribution_name(capsys: pytest.CaptureFixtur
 
     assert exc.value.code == 0
     assert capsys.readouterr().out.startswith("edge-studio ")
+
+
+def test_edge_studio_verbose_sets_explicit_log_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+
+    monkeypatch.delenv("EDGE_STUDIO_VERBOSE", raising=False)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
+    monkeypatch.setattr(main, "_run_backend_studio_main", lambda: calls.append("started"))
+
+    exit_code = main.main(["studio", "--host", "127.0.0.1", "--port", "18842", "--verbose"])
+
+    assert exit_code == 0
+    assert calls == ["started"]
+    assert os.environ["VLM_HOST"] == "127.0.0.1"
+    assert os.environ["VLM_PORT"] == "18842"
+    assert os.environ["EDGE_STUDIO_VERBOSE"] == "1"
+    assert os.environ["LOG_LEVEL"] == "info"
 
 
 def test_doctor_checks_public_distribution_name(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -191,3 +210,56 @@ def test_fetch_success_with_bad_local_dir_returns_integrity_failure(
     retry = str(result.receipt["retry_command"])
     assert retry.startswith("edge models fetch qwen3.5-9b-4bit --source huggingface --retry")
     assert "--download-dir" in retry
+
+
+def test_fetch_cleans_failed_source_before_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolution = CatalogResolution(
+        status="resolved",
+        input="qwen3.5-9b-4bit",
+        model_id="qwen3.5-9b-4bit",
+        name="Qwen3.5-9B-4bit",
+        download_hint="mlx-community/Qwen3.5-9B-4bit",
+        category="llm",
+        size_gb=None,
+        catalog_source="test",
+        catalog_version="test",
+        matched_by="id",
+        alternates=[],
+    )
+
+    class _Where:
+        status = "missing"
+        local_matches: list[object] = []
+
+    calls: list[Path] = []
+
+    def fake_runner(args: Sequence[str], _env: Mapping[str, str], _timeout: float | None) -> CommandResult:
+        local_dir = Path(args[-1])
+        calls.append(local_dir)
+        if len(calls) == 1:
+            local_dir.mkdir(parents=True)
+            (local_dir / "stale-shard.safetensors.aria2").write_text("partial", encoding="utf-8")
+            return CommandResult(returncode=1, stdout="failed", stderr="")
+
+        assert not (local_dir / "stale-shard.safetensors.aria2").exists()
+        local_dir.mkdir(parents=True, exist_ok=True)
+        (local_dir / "config.json").write_text("{}", encoding="utf-8")
+        save_file({"weight": np.arange(16, dtype=np.float32)}, local_dir / "model.safetensors")
+        return CommandResult(returncode=0, stdout="done", stderr="")
+
+    monkeypatch.setattr(model_fetch, "resolve_model_reference", lambda _model_ref: resolution)
+    monkeypatch.setattr(model_fetch, "where_model", lambda *_args, **_kwargs: _Where())
+
+    result = model_fetch.fetch_model(
+        "qwen3.5-9b-4bit",
+        options=FetchOptions(source="auto", no_probe=True, download_dir=tmp_path),
+        runner=fake_runner,
+    )
+
+    assert result.ok is True
+    assert result.receipt["selected_source"] == "hf-mirror"
+    assert result.receipt["cleaned_after_failed_sources"] == ["huggingface"]
+    assert len(calls) == 2

@@ -30,11 +30,12 @@ from backend.config import ALLOWED_ORIGINS
 from backend.resources.paths import frontend_dist_candidates
 from backend.services.error_mapper import map_error
 
-# Lesson learned: app logger defaults to WARNING, INFO messages are suppressed.
-# uvicorn --log-level info only controls its own logs, not app loggers. Add basicConfig
-# so INFO from event_upload / classify_request / pair all reach stdout.
-# When LOG_LEVEL=debug, switch to DEBUG (includes mesh op routing internal debug logs).
-_log_level = os.environ.get("LOG_LEVEL", "info").upper()
+# Default pip UX keeps server startup quiet; `edge studio --verbose` or LOG_LEVEL
+# enables INFO/DEBUG logs for mesh routing and ingestion internals.
+_log_level = os.environ.get("LOG_LEVEL")
+if not _log_level:
+    _log_level = "info" if os.environ.get("EDGE_STUDIO_VERBOSE") == "1" else "warning"
+_log_level = _log_level.upper()
 logging.basicConfig(
     level=getattr(logging, _log_level, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -250,7 +251,20 @@ def main():
 
     from backend.config import HOST, PORT
 
-    uvicorn.run("backend.main:app", host=HOST, port=PORT, reload=False)
+    ui_host = "127.0.0.1" if HOST in {"0.0.0.0", "::"} else HOST
+    url = f"http://{ui_host}:{PORT}"
+    verbose = os.environ.get("EDGE_STUDIO_VERBOSE") == "1"
+    log_level = os.environ.get("UVICORN_LOG_LEVEL") or ("info" if verbose else "warning")
+    print(f"Edge Studio is running at {url}", flush=True)
+    print("Open this URL in your browser. Press Ctrl+C to stop.", flush=True)
+    uvicorn.run(
+        "backend.main:app",
+        host=HOST,
+        port=PORT,
+        reload=False,
+        log_level=log_level,
+        access_log=verbose,
+    )
 
 
 if __name__ == "__main__":

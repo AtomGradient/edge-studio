@@ -169,6 +169,7 @@ def fetch_model(
     _progress(f"[models:fetch] target: {local_dir}")
     attempts: list[dict[str, object]] = []
     selected_source: str | None = None
+    cleaned_after_failed_sources: list[str] = []
     for source in source_order:
         attempt_started = time.monotonic()
         args, run_env = _download_command(source, repo_id, local_dir, values)
@@ -189,9 +190,14 @@ def fetch_model(
             _progress(f"[models:fetch] source={source} finished in {elapsed}s")
             break
         _progress(f"[models:fetch] source={source} failed returncode={command_result.returncode}; trying next source")
+        if local_dir.exists():
+            shutil.rmtree(local_dir)
+            cleaned_after_failed_sources.append(source)
+            _progress(f"[models:fetch] cleaned partial files from failed source={source}")
 
     receipt["attempted_sources"] = attempts
     receipt["selected_source"] = selected_source
+    receipt["cleaned_after_failed_sources"] = cleaned_after_failed_sources
     if selected_source is None:
         receipt["ok"] = False
         receipt["status"] = "download_failed"
@@ -479,7 +485,9 @@ def _download_root(download_dir: Path | None, env: Mapping[str, str]) -> Path:
 
 
 def _local_dir_name(repo_id: str) -> str:
-    return repo_id.strip().replace("/", "_")
+    name = repo_id.strip().replace("/", "_").replace("\\", "_")
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name).strip("._")
+    return name or "model"
 
 
 def _default_receipt_path(model_ref: str) -> Path:

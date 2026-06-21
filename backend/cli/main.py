@@ -68,6 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     studio = subparsers.add_parser("studio", help="Launch the local Edge Studio UI and API server")
     studio.add_argument("--host", help="Override VLM_HOST for the local server")
     studio.add_argument("--port", type=int, help="Override VLM_PORT for the local server")
+    studio.add_argument("--verbose", action="store_true", help="Show detailed server and EdgeMesh logs")
 
     doctor = subparsers.add_parser("doctor", help="Run read-only environment checks")
     doctor.add_argument("--json", action="store_true", help="Emit a machine-readable report")
@@ -206,19 +207,26 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_studio_server(*, host: str | None = None, port: int | None = None) -> int:
-    if host or port:
+def run_studio_server(*, host: str | None = None, port: int | None = None, verbose: bool = False) -> int:
+    if host or port or verbose:
         import os
 
         if host:
             os.environ["VLM_HOST"] = host
         if port:
             os.environ["VLM_PORT"] = str(port)
+        if verbose:
+            os.environ["EDGE_STUDIO_VERBOSE"] = "1"
+            os.environ.setdefault("LOG_LEVEL", "info")
 
+    _run_backend_studio_main()
+    return 0
+
+
+def _run_backend_studio_main() -> None:
     from backend.main import main as studio_main
 
     studio_main()
-    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -226,7 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "studio":
-        return run_studio_server(host=args.host, port=args.port)
+        return run_studio_server(host=args.host, port=args.port, verbose=args.verbose)
 
     if args.command == "doctor":
         report = run_doctor(include_dev_checks=args.dev)
