@@ -170,7 +170,7 @@ def _check_python_packages() -> CheckResult:
         "uvicorn",
         "pydantic",
         "httpx",
-        "edgestudio",
+        "edge-studio",
         "mlx",
         "mlx-lm",
         "mlx-vlm",

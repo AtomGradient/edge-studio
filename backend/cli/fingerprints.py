@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,15 +17,87 @@ CONTENT_SHA256_SCOPE = "content_sha256_v1"
 IGNORE_SUFFIXES = (".aria2",)
 
 
+@dataclass(frozen=True)
+class ModelDirIntegrity:
+    complete: bool
+    issues: tuple[str, ...]
+
+
 def is_complete_model_dir(path: Path) -> bool:
+    return model_dir_integrity(path).complete
+
+
+def model_dir_integrity(path: Path, *, expected_size_bytes: int | None = None) -> ModelDirIntegrity:
+    issues: list[str] = []
     if not path.is_dir():
-        return False
-    has_config = (path / "config.json").exists()
-    has_weights = any(
-        path.glob(pattern)
-        for pattern in ("*.safetensors", "*.gguf", "*.npz")
+        return ModelDirIntegrity(False, ("not_a_directory",))
+
+    if not (path / "config.json").exists():
+        issues.append("missing_config_json")
+
+    temp_files = sorted(p for p in path.rglob("*") if p.is_file() and p.name.endswith(IGNORE_SUFFIXES))
+    if temp_files:
+        issues.append("partial_download_files_present")
+
+    weight_files = sorted(
+        p
+        for p in path.rglob("*")
+        if p.is_file() and p.suffix in {".safetensors", ".gguf", ".npz"}
     )
-    return has_config and has_weights
+    if not weight_files:
+        issues.append("missing_weight_files")
+
+    index_path = path / "model.safetensors.index.json"
+    if index_path.exists():
+        issues.extend(_safetensors_index_issues(index_path))
+
+    for weight_path in weight_files:
+        if weight_path.suffix == ".safetensors":
+            issue = _safetensors_issue(weight_path)
+            if issue:
+                issues.append(issue)
+        elif weight_path.stat().st_size <= 0:
+            issues.append(f"empty_weight_file:{weight_path.relative_to(path)}")
+
+    if expected_size_bytes is not None and expected_size_bytes > 0:
+        actual_size = dir_size_bytes(path)
+        floor = int(expected_size_bytes * 0.70)
+        if actual_size < floor:
+            issues.append(f"size_below_expected:{actual_size}<{floor}")
+
+    return ModelDirIntegrity(not issues, tuple(issues))
+
+
+def _safetensors_index_issues(index_path: Path) -> list[str]:
+    try:
+        payload = json.loads(index_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return [f"invalid_safetensors_index:{index_path.name}"]
+
+    weight_map = payload.get("weight_map")
+    if not isinstance(weight_map, dict) or not weight_map:
+        return [f"invalid_safetensors_index:{index_path.name}"]
+
+    missing: list[str] = []
+    for shard_name in sorted({str(value) for value in weight_map.values()}):
+        shard_path = index_path.parent / shard_name
+        if not shard_path.is_file():
+            missing.append(shard_name)
+
+    return [f"missing_safetensors_shard:{name}" for name in missing[:20]]
+
+
+def _safetensors_issue(path: Path) -> str | None:
+    try:
+        from safetensors import safe_open
+
+        with safe_open(path, framework="np") as handle:
+            keys = list(handle.keys())
+        if not keys:
+            return f"empty_safetensors:{path.name}"
+        return None
+    except Exception as exc:  # noqa: BLE001
+        return f"invalid_safetensors:{path.name}:{str(exc)[:160]}"
 
 
 def dir_size_bytes(path: Path) -> int:

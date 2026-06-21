@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
 import sys
 from collections.abc import Sequence
@@ -50,8 +51,18 @@ from backend.cli.models import (
 )
 
 
+def cli_version() -> str:
+    try:
+        return importlib.metadata.version("edge-studio")
+    except importlib.metadata.PackageNotFoundError:
+        from edgestudio_core import __version__
+
+        return __version__
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="edge", description="Edge Developer Preview CLI")
+    parser.add_argument("--version", action="version", version=f"edge-studio {cli_version()}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     studio = subparsers.add_parser("studio", help="Launch the local Edge Studio UI and API server")
@@ -88,6 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     models_fetch.add_argument("--dry-run", action="store_true", help="Resolve and print the fetch plan without downloading")
     models_fetch.add_argument("--no-probe", action="store_true", help="Skip network probes during auto source planning")
     models_fetch.add_argument("--force", action="store_true", help="Run the downloader even if a local match already exists")
+    models_fetch.add_argument("--clean", action="store_true", help="Remove the target model directory before downloading")
+    models_fetch.add_argument("--retry", action="store_true", help="Clean the target directory and force a fresh download")
     models_fetch.add_argument("--timeout", type=float, default=0.0, help="Per-source subprocess timeout in seconds; 0 disables")
     models_fetch.add_argument("--json", action="store_true", help="Emit a machine-readable receipt/report")
 
@@ -244,7 +257,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     receipt_path=Path(args.receipt).expanduser() if args.receipt else None,
                     dry_run=args.dry_run,
                     no_probe=args.no_probe,
-                    force=args.force,
+                    force=args.force or args.retry,
+                    clean=args.clean or args.retry,
                     timeout_seconds=args.timeout if args.timeout and args.timeout > 0 else None,
                 ),
             )

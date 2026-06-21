@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from backend.cli.fingerprints import dir_size_bytes, is_complete_model_dir
+from backend.cli.fingerprints import dir_size_bytes, model_dir_integrity
 from backend.cli.model_paths import discover_local_model_paths, model_cache_roots
 from backend.resources.paths import script_path
 
@@ -28,14 +28,20 @@ class LocalModel:
     path: str
     size_bytes: int
     complete: bool
+    issues: tuple[str, ...] = ()
+    expected_size_bytes: int | None = None
 
     def as_dict(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "name": self.name,
             "path": self.path,
             "size_bytes": self.size_bytes,
             "complete": self.complete,
+            "issues": list(self.issues),
         }
+        if self.expected_size_bytes is not None:
+            payload["expected_size_bytes"] = self.expected_size_bytes
+        return payload
 
 
 @dataclass(frozen=True)
@@ -148,6 +154,9 @@ def list_models(*, env: Mapping[str, str] | None = None) -> ModelsListReport:
 def where_model(model_ref: str, *, env: Mapping[str, str] | None = None) -> ModelWhereReport:
     resolution = resolve_model_reference(model_ref)
     local_matches = _matching_local_models(resolution, env)
+    expected_size_bytes = _expected_size_bytes(resolution)
+    if expected_size_bytes is not None:
+        local_matches = [_with_expected_integrity(match, expected_size_bytes) for match in local_matches]
     if resolution.status == "unknown":
         status = "unknown"
     elif any(match.complete for match in local_matches):
@@ -255,6 +264,8 @@ def format_models_list(report: ModelsListReport) -> str:
         complete = "complete" if model.complete else "incomplete"
         lines.append(f"- {model.name} ({complete})")
         lines.append(f"  path: {model.path}")
+        if model.issues:
+            lines.append(f"  issues: {', '.join(model.issues[:3])}")
     if len(report.local_models) > 20:
         lines.append(f"... {len(report.local_models) - 20} more local model(s)")
     if not report.local_models:
@@ -281,6 +292,8 @@ def format_model_where(report: ModelWhereReport) -> str:
         for match in report.local_matches:
             complete = "complete" if match.complete else "incomplete"
             lines.append(f"path ({complete}): {match.path}")
+            if match.issues:
+                lines.append(f"issues: {', '.join(match.issues[:5])}")
     else:
         lines.append("path: not installed")
     if report.fetch_command:
@@ -303,6 +316,8 @@ def format_model_doctor(report: ModelDoctorReport) -> str:
         for match in report.where.local_matches:
             complete = "complete" if match.complete else "incomplete"
             lines.append(f"local ({complete}): {match.path}")
+            if match.issues:
+                lines.append(f"local issues: {', '.join(match.issues[:5])}")
     elif report.where.fetch_command:
         lines.append(f"local: missing; run `{report.where.fetch_command}`")
     else:
@@ -421,16 +436,38 @@ def _matching_local_models(
 
 def _discover_local_models(env: Mapping[str, str] | None) -> list[LocalModel]:
     discovered = discover_local_model_paths(env)
-    models = [
-        LocalModel(
-            name=name,
-            path=path,
-            size_bytes=dir_size_bytes(Path(path)),
-            complete=is_complete_model_dir(Path(path)),
+    models: list[LocalModel] = []
+    for name, path in sorted(discovered.items(), key=lambda item: item[0].lower()):
+        model_path = Path(path)
+        integrity = model_dir_integrity(model_path)
+        models.append(
+            LocalModel(
+                name=name,
+                path=path,
+                size_bytes=dir_size_bytes(model_path),
+                complete=integrity.complete,
+                issues=integrity.issues,
+            )
         )
-        for name, path in sorted(discovered.items(), key=lambda item: item[0].lower())
-    ]
     return models
+
+
+def _with_expected_integrity(model: LocalModel, expected_size_bytes: int) -> LocalModel:
+    integrity = model_dir_integrity(Path(model.path), expected_size_bytes=expected_size_bytes)
+    return LocalModel(
+        name=model.name,
+        path=model.path,
+        size_bytes=model.size_bytes,
+        complete=integrity.complete,
+        issues=integrity.issues,
+        expected_size_bytes=expected_size_bytes,
+    )
+
+
+def _expected_size_bytes(resolution: CatalogResolution) -> int | None:
+    if resolution.size_gb is None or resolution.size_gb <= 0:
+        return None
+    return int(resolution.size_gb * 1_000_000_000)
 
 
 def _downloader_status() -> dict[str, object]:

@@ -8,7 +8,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import selectors
+import shutil
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -17,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Literal, Mapping, Sequence
 
-from backend.cli.fingerprints import dir_size_bytes, directory_manifest_hash, pretty_json
+from backend.cli.fingerprints import dir_size_bytes, directory_manifest_hash, model_dir_integrity, pretty_json
 from backend.cli.models import CatalogResolution, resolve_model_reference, where_model
 from backend.resources.paths import script_path
 from backend.services.app_dirs import data_path
@@ -48,6 +51,7 @@ class FetchOptions:
     dry_run: bool = False
     no_probe: bool = False
     force: bool = False
+    clean: bool = False
     timeout_seconds: float | None = None
 
 
@@ -98,9 +102,13 @@ def fetch_model(
     repo_id = _repo_id_for_resolution(resolution)
     download_root = _download_root(opts.download_dir, values)
     local_dir = download_root / _local_dir_name(repo_id)
+    cleaned_path: str | None = None
+    if opts.clean and not opts.dry_run and local_dir.exists():
+        shutil.rmtree(local_dir)
+        cleaned_path = str(local_dir)
     before = where_model(model_ref, env=values)
 
-    if before.status == "ok" and not opts.force and not opts.dry_run and before.local_matches:
+    if before.status == "ok" and not opts.force and not opts.clean and not opts.dry_run and before.local_matches:
         local = before.local_matches[0]
         local_path = Path(local.path)
         receipt = _base_receipt(
@@ -117,6 +125,7 @@ def fetch_model(
             "download_dir": str(download_root),
             "path": str(local_path),
             "force": opts.force,
+            "clean": opts.clean,
             "dry_run": opts.dry_run,
             "selected_source": None,
             "size_bytes": local.size_bytes,
@@ -145,6 +154,8 @@ def fetch_model(
         "download_dir": str(download_root),
         "path": str(local_dir),
         "force": opts.force,
+        "clean": opts.clean,
+        "cleaned_path": cleaned_path,
         "dry_run": opts.dry_run,
     })
 
@@ -154,11 +165,14 @@ def fetch_model(
         return _finish_result(receipt, opts, start_monotonic, write_receipt=False)
 
     download_root.mkdir(parents=True, exist_ok=True)
+    _progress(f"[models:fetch] source plan: {' -> '.join(source_order)}")
+    _progress(f"[models:fetch] target: {local_dir}")
     attempts: list[dict[str, object]] = []
     selected_source: str | None = None
     for source in source_order:
         attempt_started = time.monotonic()
         args, run_env = _download_command(source, repo_id, local_dir, values)
+        _progress(f"[models:fetch] starting source={source} repo={repo_id}")
         command_result = command_runner(args, run_env, opts.timeout_seconds)
         elapsed = round(time.monotonic() - attempt_started, 3)
         attempt = {
@@ -172,7 +186,9 @@ def fetch_model(
         attempts.append(attempt)
         if command_result.returncode == 0:
             selected_source = source
+            _progress(f"[models:fetch] source={source} finished in {elapsed}s")
             break
+        _progress(f"[models:fetch] source={source} failed returncode={command_result.returncode}; trying next source")
 
     receipt["attempted_sources"] = attempts
     receipt["selected_source"] = selected_source
@@ -183,14 +199,37 @@ def fetch_model(
             "code": "download_failed",
             "message": "All configured download sources failed.",
         }
+        receipt["retry_command"] = _retry_command(model_ref, opts)
         return _finish_result(receipt, opts, start_monotonic, write_receipt=True)
 
     manifest = directory_manifest_hash(local_dir)
+    expected_size_bytes = _expected_size_bytes(resolution)
+    integrity = model_dir_integrity(local_dir, expected_size_bytes=expected_size_bytes)
+    if not integrity.complete:
+        receipt.update({
+            "ok": False,
+            "status": "download_incomplete",
+            "path": str(local_dir),
+            "size_bytes": dir_size_bytes(local_dir),
+            "expected_size_bytes": expected_size_bytes,
+            "integrity_issues": list(integrity.issues),
+            "resumable": True,
+            "retry_command": _retry_command(model_ref, opts),
+            **manifest,
+        })
+        receipt["error"] = {
+            "code": "model_integrity_failed",
+            "message": "Downloaded model did not pass local integrity checks.",
+        }
+        return _finish_result(receipt, opts, start_monotonic, write_receipt=True)
+
     receipt.update({
         "ok": True,
         "status": "downloaded",
         "path": str(local_dir),
         "size_bytes": dir_size_bytes(local_dir),
+        "expected_size_bytes": expected_size_bytes,
+        "integrity_issues": [],
         "resumable": True,
         **manifest,
     })
@@ -218,6 +257,12 @@ def format_fetch_result(result: FetchResult) -> str:
         lines.append(f"receipt: {receipt['receipt_path']}")
     if receipt.get("status") == "download_failed":
         lines.append("error: all configured download sources failed")
+    if receipt.get("status") == "download_incomplete":
+        lines.append("error: downloaded model did not pass integrity checks")
+    if receipt.get("integrity_issues"):
+        lines.append(f"issues: {', '.join(str(issue) for issue in receipt['integrity_issues'][:5])}")
+    if receipt.get("retry_command"):
+        lines.append(f"retry: {receipt['retry_command']}")
     return "\n".join(lines)
 
 
@@ -362,22 +407,60 @@ def _download_command(
 
 
 def _run_command(args: Sequence[str], env: Mapping[str, str], timeout: float | None) -> CommandResult:
+    output = ""
+    start = time.monotonic()
+    last_progress = start
+    process: subprocess.Popen[bytes] | None = None
     try:
-        completed = subprocess.run(
+        process = subprocess.Popen(
             list(args),
             env=dict(env),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=timeout if timeout and timeout > 0 else None,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
         )
-        return CommandResult(completed.returncode, completed.stdout or "", completed.stderr or "")
-    except subprocess.TimeoutExpired as exc:
-        stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-        stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
-        return CommandResult(124, stdout, stderr or "command timed out", timed_out=True)
+        if process.stdout is None:
+            returncode = process.wait(timeout=timeout if timeout and timeout > 0 else None)
+            return CommandResult(returncode, output, "")
+
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        try:
+            while True:
+                if timeout and timeout > 0 and time.monotonic() - start > timeout:
+                    process.kill()
+                    process.wait()
+                    return CommandResult(124, output, "command timed out", timed_out=True)
+
+                events = selector.select(timeout=0.5)
+                if events:
+                    for key, _mask in events:
+                        chunk = os.read(key.fileobj.fileno(), 8192)
+                        if not chunk:
+                            selector.unregister(key.fileobj)
+                            break
+                        text = chunk.decode("utf-8", errors="replace")
+                        output = _append_capped(output, text)
+                        _progress(text.rstrip("\n"))
+                        last_progress = time.monotonic()
+                elif process.poll() is None and time.monotonic() - last_progress >= 15:
+                    elapsed = int(time.monotonic() - start)
+                    _progress(f"[models:fetch] still downloading... elapsed={elapsed}s")
+                    last_progress = time.monotonic()
+
+                if process.poll() is not None:
+                    if not selector.get_map():
+                        break
+                    continue
+
+            return CommandResult(process.returncode or 0, output, "")
+        finally:
+            selector.close()
     except FileNotFoundError as exc:
         return CommandResult(127, "", str(exc))
+    finally:
+        if process is not None and process.poll() is None:
+            process.kill()
+            process.wait()
 
 
 def _download_root(download_dir: Path | None, env: Mapping[str, str]) -> Path:
@@ -416,6 +499,37 @@ def _safe_tail(value: str, *, limit: int = 1200) -> str:
     )
     text = re.sub(r"hf_[A-Za-z0-9_-]{16,}", "hf_***", text)
     return text
+
+
+def _append_capped(current: str, text: str, *, limit: int = 20000) -> str:
+    combined = current + text
+    return combined[-limit:] if len(combined) > limit else combined
+
+
+def _expected_size_bytes(resolution: CatalogResolution) -> int | None:
+    if resolution.size_gb is None or resolution.size_gb <= 0:
+        return None
+    return int(resolution.size_gb * 1_000_000_000)
+
+
+def _retry_command(model_ref: str, opts: FetchOptions) -> str:
+    parts = ["edge", "models", "fetch", model_ref, "--source", opts.source, "--retry"]
+    if opts.download_dir is not None:
+        parts.extend(["--download-dir", str(opts.download_dir)])
+    return " ".join(_shell_token(part) for part in parts)
+
+
+def _shell_token(value: object) -> str:
+    text = str(value)
+    if re.fullmatch(r"[A-Za-z0-9_./:@%+=,-]+", text):
+        return text
+    return "'" + text.replace("'", "'\"'\"'") + "'"
+
+
+def _progress(message: str) -> None:
+    if not message:
+        return
+    print(message, file=sys.stderr, flush=True)
 
 
 def _now_utc() -> datetime:
