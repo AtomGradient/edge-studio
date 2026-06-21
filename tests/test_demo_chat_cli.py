@@ -369,6 +369,42 @@ def test_demo_chat_interactive_reports_warmup_retry_failure(
     assert demo_chat.INCOMPLETE_GENERATION_MESSAGE not in output.getvalue()
 
 
+def test_demo_chat_interactive_does_not_retry_after_partial_stream_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "Qwen3.5-9B-4bit"
+    model_dir.mkdir()
+    calls = 0
+
+    monkeypatch.setattr(demo_chat, "where_model", lambda *_args, **_kwargs: _fake_where_for_model(model_dir))
+    monkeypatch.setattr(demo_chat, "_run_mlx_sync", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(demo_chat, "directory_manifest_hash", lambda _path: {"sha256": "sha256:model"})
+
+    def fake_streamed_answer(**kwargs) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        print("partial", end="", file=kwargs["output_stream"])
+        raise demo_chat.IncompleteGenerationError(partial_token_count=1)
+
+    monkeypatch.setattr(demo_chat, "_generate_streamed_answer", fake_streamed_answer)
+
+    output = io.StringIO()
+    result = demo_chat.run_demo_chat_interactive(
+        options=demo_chat.ChatRunOptions(model_ref="qwen3.5-9b-4bit", interactive=True),
+        input_stream=io.StringIO("hello\n/exit\n"),
+        output_stream=output,
+    )
+
+    assert result.ok is False
+    assert result.exit_code == 1
+    assert result.turn_count == 0
+    assert calls == 1
+    assert "assistant> partial" in output.getvalue()
+    assert demo_chat.INCOMPLETE_GENERATION_PARTIAL_MESSAGE in output.getvalue()
+    assert demo_chat.INCOMPLETE_GENERATION_MESSAGE not in output.getvalue()
+
+
 def test_demo_chat_interactive_with_imprint_restore_failure_does_not_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

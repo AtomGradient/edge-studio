@@ -42,6 +42,9 @@ INCOMPLETE_GENERATION_MESSAGE = "Generation finished without a complete event."
 INCOMPLETE_GENERATION_RETRY_MESSAGE = (
     "Model warm-up did not finish. Try the same message again; if it repeats, restart `edge demo chat`."
 )
+INCOMPLETE_GENERATION_PARTIAL_MESSAGE = (
+    "Generation stream ended before completion. Try the same message again; if it repeats, restart `edge demo chat`."
+)
 
 
 @dataclass(frozen=True)
@@ -97,6 +100,12 @@ class ChatImprintError(ValueError):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class IncompleteGenerationError(RuntimeError):
+    def __init__(self, *, partial_token_count: int = 0) -> None:
+        super().__init__(INCOMPLETE_GENERATION_MESSAGE)
+        self.partial_token_count = partial_token_count
 
 
 def run_demo_chat(
@@ -663,6 +672,8 @@ def _generate_streamed_answer_with_retry(
     except Exception as exc:
         if not _is_incomplete_generation_error(exc):
             raise
+        if output_stream is not None and _incomplete_generation_partial_token_count(exc) > 0:
+            raise RuntimeError(INCOMPLETE_GENERATION_PARTIAL_MESSAGE) from exc
         _progress("retry", "generation ended before completion; retrying once")
         try:
             return _generate_streamed_answer(
@@ -681,7 +692,13 @@ def _generate_streamed_answer_with_retry(
 
 
 def _is_incomplete_generation_error(exc: Exception) -> bool:
-    return INCOMPLETE_GENERATION_MESSAGE in str(exc)
+    return isinstance(exc, IncompleteGenerationError) or INCOMPLETE_GENERATION_MESSAGE in str(exc)
+
+
+def _incomplete_generation_partial_token_count(exc: Exception) -> int:
+    if isinstance(exc, IncompleteGenerationError):
+        return max(0, exc.partial_token_count)
+    return 0
 
 
 async def _generate_streamed_answer_async(
@@ -773,7 +790,7 @@ async def _generate_streamed_answer_async(
             elif event_type == "cancelled":
                 raise RuntimeError("Generation was cancelled.")
 
-        raise RuntimeError(INCOMPLETE_GENERATION_MESSAGE)
+        raise IncompleteGenerationError(partial_token_count=len(chunks))
     finally:
         if not future.done():
             cancel_event.set()
