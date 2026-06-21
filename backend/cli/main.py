@@ -38,6 +38,7 @@ from backend.cli.demo_learn import (
     plan_learn_run,
 )
 from backend.cli.doctor import format_human, run_doctor
+from backend.cli.export_scaffold import ExportScaffoldOptions, format_export_scaffold, run_export_scaffold
 from backend.cli.model_fetch import FetchOptions, fetch_model, format_fetch_result
 from backend.cli.models import (
     doctor_exit_code,
@@ -105,6 +106,32 @@ def build_parser() -> argparse.ArgumentParser:
     models_fetch.add_argument("--retry", action="store_true", help="Clean the target directory and force a fresh download")
     models_fetch.add_argument("--timeout", type=float, default=0.0, help="Per-source subprocess timeout in seconds; 0 disables")
     models_fetch.add_argument("--json", action="store_true", help="Emit a machine-readable receipt/report")
+
+    export = subparsers.add_parser("export", help="Export app and runtime artifacts")
+    export_subparsers = export.add_subparsers(dest="export_command", required=True)
+    export_scaffold = export_subparsers.add_parser("scaffold", help="Export an Edge Scaffold iOS app ZIP")
+    export_scaffold.add_argument("--model", default="auto", help="Catalog id, model name, repo id, or auto")
+    export_scaffold.add_argument("--app-name", default="MyApp", help="Display name for the generated iOS app")
+    export_scaffold.add_argument(
+        "--system-prompt",
+        default="You are a helpful assistant.",
+        help="Default system prompt written into ScaffoldConfig.swift",
+    )
+    export_scaffold.add_argument("--bundle-id", help="Optional iOS bundle identifier")
+    export_scaffold.add_argument("--team-id", help="Optional Apple Developer Team ID")
+    export_scaffold.add_argument(
+        "--direction-set-id",
+        default=None,
+        help="Require a matching RPP A-library direction set id",
+    )
+    export_scaffold.add_argument(
+        "--output",
+        default=".",
+        help="Output directory or .zip path for the generated app archive",
+    )
+    export_scaffold.add_argument("--no-dsr", action="store_false", dest="enable_dsr", help="Disable DSR in exported config")
+    export_scaffold.add_argument("--dsr-budget", type=int, help="Optional DSR token budget")
+    export_scaffold.add_argument("--json", action="store_true", help="Emit a machine-readable report")
 
     demo = subparsers.add_parser("demo", help="Inspect demo receipts and local-only proofs")
     demo_subparsers = demo.add_subparsers(dest="demo_command", required=True)
@@ -274,6 +301,26 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(result.to_json() if args.json else format_fetch_result(result))
             return result.exit_code
         parser.error(f"unknown models command: {args.models_command}")
+        return 2
+
+    if args.command == "export":
+        if args.export_command == "scaffold":
+            result = run_export_scaffold(
+                options=ExportScaffoldOptions(
+                    model_ref=args.model,
+                    app_name=args.app_name,
+                    system_prompt=args.system_prompt,
+                    bundle_id=args.bundle_id,
+                    team_id=args.team_id,
+                    direction_set_id=args.direction_set_id,
+                    output_path=Path(args.output).expanduser() if args.output else None,
+                    enable_dsr=args.enable_dsr,
+                    dsr_budget=args.dsr_budget,
+                )
+            )
+            print(result.to_json() if args.json else format_export_scaffold(result))
+            return result.exit_code
+        parser.error(f"unknown export command: {args.export_command}")
         return 2
 
     if args.command == "demo":

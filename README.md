@@ -31,19 +31,19 @@ source .venv/bin/activate
 uv pip install edge-studio
 ```
 
-Current release candidate: `0.0.1rc12`.
+Current release candidate: `0.0.1rc13`.
 
 For a deterministic RC install:
 
 ```bash
-python -m pip install edge-studio==0.0.1rc12
+python -m pip install edge-studio==0.0.1rc13
 ```
 
 The package installs one command-line entry point:
 
 | Command | Use |
 |---|---|
-| `edge` | Launch Studio, prepare models, run local chat, inspect receipts, and try the learning demo. |
+| `edge` | Launch Studio, prepare models, run local chat, inspect receipts, try the learning demo, and export scaffold apps. |
 
 ## Quick Start
 
@@ -98,6 +98,23 @@ edge demo learn run \
 The demo uses a synthetic finance preference to exercise local receipts,
 correction capture, Neural Imprint artifact generation, and a follow-up query
 without bundling internal evaluation data.
+
+## Export a Scaffold App
+
+After the model is available, export an iOS scaffold app ZIP directly from the
+CLI. This path is designed for Code Agents and does not require clicking the Web
+UI:
+
+```bash
+edge export scaffold \
+  --model qwen3.5-9b-4bit \
+  --app-name FinanceAgent \
+  --output ./exports
+```
+
+The command writes a stable ZIP path under `./exports`. Add `--bundle-id` and
+`--team-id` when you want the generated Xcode project to be closer to real-device
+signing on the first open.
 
 For the full walkthrough, SDK integration paths, and API references, use the
 Edge Developers documentation:
