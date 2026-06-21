@@ -286,7 +286,15 @@ def export_scaffold_zip(
 
         # ── Step 7: Customize project.yml ────────
         _p("Customizing project.yml...", 0.55)
-        _customize_project_yml(scaffold_dest, safe_name, app_name, model_name, bundle_id, team_id)
+        _customize_project_yml(
+            scaffold_dest,
+            safe_name,
+            app_name,
+            model_name,
+            model_dir,
+            bundle_id,
+            team_id,
+        )
         yml_path = os.path.join(scaffold_dest, "project.yml")
         _assert_contains(yml_path, f"name: {safe_name}", "Step 7: project.yml target name")
         _assert_contains(yml_path, f"{safe_name}_model_config", "Step 7: project.yml model config ref")
@@ -799,7 +807,50 @@ def _customize_model_config(scaffold_dest: str, safe_name: str, model_dir: str, 
         f.write(config_content)
 
 
-def _customize_project_yml(scaffold_dest: str, safe_name: str, app_name: str, model_name: str, bundle_id: str | None = None, team_id: str | None = None):
+def _yaml_quote(value: str) -> str:
+    return json.dumps(str(value))
+
+
+def _ensure_project_yml_odr(content: str, *, model_dir: str, model_name: str) -> str:
+    if "KnownAssetTags:" not in content:
+        known_tags = "attributes:\n  KnownAssetTags:\n    - model\n"
+        if re.search(r"^attributes:\n", content, flags=re.MULTILINE):
+            content = re.sub(r"^attributes:\n", known_tags, content, count=1, flags=re.MULTILINE)
+        else:
+            content = re.sub(r"^(name: .+\n)", r"\1" + known_tags, content, count=1, flags=re.MULTILINE)
+
+    if model_dir not in content or "resourceTags:" not in content:
+        if "\n    sources:\n" not in content:
+            content = re.sub(
+                r"(\n    platform: [^\n]+\n)",
+                r"\1    sources:\n",
+                content,
+                count=1,
+            )
+        odr_source = (
+            f"      - path: {_yaml_quote(model_dir)}\n"
+            f"        name: {_yaml_quote(model_name)}\n"
+            "        buildPhase: resources\n"
+            "        resourceTags:\n"
+            "          - model\n"
+        )
+        for marker in ("\n    settings:\n", "\n    dependencies:\n", "\n    entitlements:\n"):
+            if marker in content:
+                return content.replace(marker, "\n" + odr_source + marker, 1)
+        raise ScaffoldExportError("project.yml target section not found for ODR source insertion")
+
+    return content
+
+
+def _customize_project_yml(
+    scaffold_dest: str,
+    safe_name: str,
+    app_name: str,
+    model_name: str,
+    model_dir: str,
+    bundle_id: str | None = None,
+    team_id: str | None = None,
+):
     """Patch project.yml with new app name, paths, and config file reference."""
     yml_path = os.path.join(scaffold_dest, "project.yml")
     _assert_file(yml_path, "project.yml")
@@ -838,6 +889,8 @@ def _customize_project_yml(scaffold_dest: str, safe_name: str, app_name: str, mo
         content = re.sub(r'PRODUCT_BUNDLE_IDENTIFIER: .*', f'PRODUCT_BUNDLE_IDENTIFIER: {bundle_id}', content)
     if team_id:
         content = re.sub(r'DEVELOPMENT_TEAM: .*', f'DEVELOPMENT_TEAM: {team_id}', content)
+
+    content = _ensure_project_yml_odr(content, model_dir=model_dir, model_name=model_name)
 
     # Update Build Phase script config file reference (lowercase variant)
     if "postBuildScripts" in content:

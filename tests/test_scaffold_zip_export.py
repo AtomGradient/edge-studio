@@ -208,6 +208,10 @@ def test_export_scaffold_zip_creates_expected_archive_with_mocked_xcodegen(
 
         project_yml = zf.read("TestApp/project.yml").decode("utf-8")
         assert "name: TestApp" in project_yml
+        assert "KnownAssetTags:" in project_yml
+        assert "resourceTags:" in project_yml
+        assert f"path: {json.dumps(str(model_dir))}" in project_yml
+        assert f"name: {json.dumps(model_dir.name)}" in project_yml
         assert "PRODUCT_BUNDLE_IDENTIFIER: com.example.testapp" in project_yml
         assert "DEVELOPMENT_TEAM: TEAMID" in project_yml
         assert "url: https://github.com/AtomGradient/edge-kit.git" in project_yml
@@ -228,6 +232,47 @@ def test_export_scaffold_zip_creates_expected_archive_with_mocked_xcodegen(
         assert "`Resources/RPP` is empty" in readme
         assert "## What This Repo Is" not in readme
         assert "Current minimum EdgeKit version" not in readme
+
+
+def test_exported_project_yml_preserves_odr_after_xcodegen_regenerate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not shutil.which("xcodegen") and not Path("/opt/homebrew/bin/xcodegen").is_file():
+        pytest.skip("xcodegen is required for the ODR regeneration test")
+
+    model_dir = tmp_path / "models" / "Qwen3-Test-4bit"
+    model_dir.mkdir(parents=True)
+    (model_dir / "config.json").write_text('{"model_type": "qwen3"}', encoding="utf-8")
+    _write_safetensors(
+        model_dir / "model.safetensors",
+        {"model.embed_tokens.weight": {"dtype": "F16", "shape": [2, 2], "data_offsets": [0, 8]}},
+    )
+
+    scaffold_src = tmp_path / "edge-scaffold"
+    scaffold_src.mkdir()
+    _write_minimal_scaffold(scaffold_src)
+    monkeypatch.setattr(scaffold, "SCAFFOLD_SRC", str(scaffold_src))
+    monkeypatch.setattr(scaffold, "_select_rpp_a_library", lambda *_args, **_kwargs: None)
+
+    result = scaffold.export_scaffold_zip(str(model_dir), app_name="Regen App")
+
+    assert result.success is True, result.error
+
+    extract_dir = tmp_path / "unzipped"
+    with zipfile.ZipFile(result.zip_path) as zf:
+        zf.extractall(extract_dir)
+    project_root = extract_dir / "RegenApp"
+
+    scaffold._run_xcodegen(str(project_root), "RegenApp")
+
+    pbxproj_path = project_root / "RegenApp.xcodeproj" / "project.pbxproj"
+    pbxproj_text = pbxproj_path.read_text(encoding="utf-8")
+
+    assert "KnownAssetTags = model;" not in pbxproj_text
+    assert re.search(r"KnownAssetTags = \(\s*model,?\s*\);", pbxproj_text)
+    assert re.search(r"ASSET_TAGS = \(model,?\s*\);", pbxproj_text)
+    assert model_dir.name in pbxproj_text
 
 
 def test_patch_xcodeproj_odr_writes_known_asset_tags_as_array(tmp_path: Path) -> None:
