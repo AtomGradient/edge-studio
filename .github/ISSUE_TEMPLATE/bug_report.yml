@@ -1,0 +1,55 @@
+name: Bug report
+description: Report a problem with Edge Studio
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include secrets, private model files, local receipts, or user data.
+  - type: input
+    id: version
+    attributes:
+      label: Edge Studio version
+      description: Run `python -m pip show edge-studio` if installed from PyPI.
+      placeholder: "0.0.1rc16"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: "macOS 15, Apple Silicon, Python 3.11"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Minimal steps to reproduce the issue.
+      placeholder: |
+        1. Run ...
+        2. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste sanitized logs only.
+      render: shell
+    validations:
+      required: false
