@@ -41,6 +41,13 @@ Use this repository for:
 - Product and documentation links
 - License and security contact information
 
+## License
+
+This repository is a public issue and support shell for Edge Studio. It is not
+an open-source source distribution. Repository contents and the installable
+`edge-studio` package are governed by the AtomGradient Proprietary License
+unless a separate written agreement says otherwise.
+
 ## Privacy Boundary
 
 Edge Studio workflows are designed for local, user-controlled development.
